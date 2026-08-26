@@ -10,12 +10,14 @@ dependencies = [
  "cortex-m-rt",
  "defmt 1.1.1",
  "defmt-rtt",
+ "embassy-embedded-hal",
  "embassy-executor",
  "embassy-stm32",
  "embassy-sync",
  "embassy-time",
  "embassy-usb",
  "panic-probe",
+ "sequential-storage",
  "static_cell",
 ]
 
@@ -927,6 +929,16 @@ name = "semver-parser"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
+
+[[package]]
+name = "sequential-storage"
+version = "8.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e750f14f4f6e5a81277c66311713a56106c8df0196df62a634d1fc806556832b"
+dependencies = [
+ "defmt 1.1.1",
+ "embedded-storage-async",
+]
 
 [[package]]
 name = "serde"

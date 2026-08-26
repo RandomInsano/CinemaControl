@@ -13,7 +13,8 @@ requirement, a constraint that isn't visible in the code itself).
 ## Structure
 
 Each peripheral subsystem is its own module (`src/hid.rs`, `src/pwm.rs`,
-`src/smbus.rs`), each owning its own `bind_interrupts!` block, an `init()`
+`src/smbus.rs`, `src/storage.rs`), each owning its own `bind_interrupts!`
+block (where relevant), an `init()`
 that takes raw `Peri<'static, ...>` peripherals and returns whatever's ready
 to spawn, and its `#[embassy_executor::task]` function(s). `src/main.rs` is
 orchestration only: clock config, calling each module's `init()`, spawning
@@ -33,6 +34,16 @@ above).
 STM32F103C8). Build artifacts land in `~/Downloads/CargoBuild`, not
 `./target` — that's the user's global `~/.cargo/config.toml`, not something
 to override.
+
+## Storage
+
+This chip (STM32F103C8) has no hardware EEPROM — confirmed via the embassy
+build output, which never sets its `eeprom` cfg for this chip — so brightness
+persistence uses program flash instead, via the `sequential-storage` crate
+(`src/storage.rs`), not hand-rolled wear-leveling. It needs the last two
+flash pages reserved in `memory.x`. Its API is async-only and embassy-stm32
+has no async flash driver for F1, so the blocking `Flash` is wrapped in
+`embassy_embedded_hal::adapter::BlockingAsync`.
 
 ## SMBus / PA-2311-02A
 

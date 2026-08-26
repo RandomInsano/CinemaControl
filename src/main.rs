@@ -4,6 +4,7 @@
 mod hid;
 mod pwm;
 mod smbus;
+mod storage;
 
 use embassy_executor::Spawner;
 use embassy_stm32::rcc::{Hse, HseMode, Pll, PllMul, PllPreDiv, PllSource, Sysclk};
@@ -28,6 +29,13 @@ fn clock_config() -> Config {
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> ! {
     let p = embassy_stm32::init(clock_config());
+
+    // --- Restore brightness saved from a previous power cycle, if any ---
+    let mut store = storage::init(p.FLASH);
+    if let Some(brightness) = storage::load(&mut store).await {
+        hid::restore_brightness(brightness);
+    }
+    spawner.spawn(storage::task(store).unwrap());
 
     // --- USB HID (VESA Monitor brightness) ---
     let (usb, hid_writer) = hid::init(p.USB, p.PA12, p.PA11).await;

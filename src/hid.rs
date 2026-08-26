@@ -29,6 +29,12 @@ pub static BRIGHTNESS_CHANGED: Signal<CriticalSectionRawMutex, u16> = Signal::ne
 
 pub const MAX_BRIGHTNESS: u16 = 1023;
 
+/// Sets the startup brightness restored from flash, without signaling
+/// [`BRIGHTNESS_CHANGED`] (so it isn't immediately saved straight back).
+pub fn restore_brightness(value: u16) {
+    BRIGHTNESS.store(value.min(MAX_BRIGHTNESS), Ordering::Relaxed);
+}
+
 /// VESA/USB Monitor Control Class HID report descriptor: a single Monitor
 /// Control application collection (Usage Page 0x80, Usage 0x01) containing a
 /// VESA Virtual Controls Brightness usage (Usage Page 0x82, Usage 0x10, VCP
