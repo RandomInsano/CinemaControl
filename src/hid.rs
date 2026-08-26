@@ -104,37 +104,58 @@ pub async fn init(
     }
 
     let usb_driver = Driver::new(usb, Irqs, dp, dm);
+    let mut builder = usb_builder(usb_driver);
 
-    let mut usb_config = UsbConfig::new(0x1209, 0xCC02); // pid.codes shared testing VID:PID
-    usb_config.manufacturer = Some("CinemaControl");
-    usb_config.product = Some("CinemaControl Monitor Controller");
-    usb_config.serial_number = Some("CC-0001");
-    usb_config.max_power = 100;
-    usb_config.max_packet_size_0 = 64;
-    usb_config.device_class = 0x00;
-    usb_config.device_sub_class = 0x00;
-    usb_config.device_protocol = 0x00;
-    usb_config.composite_with_iads = false;
+    static HANDLER: StaticCell<BrightnessHandler> = StaticCell::new();
+    let hid_writer = build_hid_writer(&mut builder, HANDLER.init(BrightnessHandler));
 
+    let usb = builder.build();
+
+    (usb, hid_writer)
+}
+
+fn usb_device_config() -> UsbConfig<'static> {
+    let mut config = UsbConfig::new(0x1209, 0xCC02); // pid.codes shared testing VID:PID
+    config.manufacturer = Some("CinemaControl");
+    config.product = Some("CinemaControl Monitor Controller");
+    config.serial_number = Some("CC-0001");
+    config.max_power = 100;
+    config.max_packet_size_0 = 64;
+    config.device_class = 0x00;
+    config.device_sub_class = 0x00;
+    config.device_protocol = 0x00;
+    config.composite_with_iads = false;
+    config
+}
+
+/// Allocates the descriptor/control buffers `Builder` needs (as `'static`
+/// storage, since the `UsbDevice` it produces gets spawned as a task) and
+/// starts a `Builder` from them.
+fn usb_builder(usb_driver: UsbDriver) -> Builder<'static, UsbDriver> {
     static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
     static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
     static MSOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
     static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
-    static HID_STATE: StaticCell<HidState> = StaticCell::new();
-    static HANDLER: StaticCell<BrightnessHandler> = StaticCell::new();
 
-    let handler = HANDLER.init(BrightnessHandler);
-
-    let mut builder = Builder::new(
+    Builder::new(
         usb_driver,
-        usb_config,
+        usb_device_config(),
         CONFIG_DESC.init([0; 256]),
         BOS_DESC.init([0; 256]),
         MSOS_DESC.init([0; 256]),
         CONTROL_BUF.init([0; 64]),
-    );
+    )
+}
 
-    let hid_config = HidConfig {
+/// Registers the VESA Monitor HID interface on `builder` and returns its
+/// writer for pushing Input reports.
+fn build_hid_writer(
+    builder: &mut Builder<'static, UsbDriver>,
+    handler: &'static mut BrightnessHandler,
+) -> HidWriter<'static, UsbDriver, 2> {
+    static HID_STATE: StaticCell<HidState> = StaticCell::new();
+
+    let config = HidConfig {
         report_descriptor: HID_REPORT_DESCRIPTOR,
         request_handler: Some(handler),
         poll_ms: 60,
@@ -142,12 +163,7 @@ pub async fn init(
         hid_subclass: HidSubclass::No,
         hid_boot_protocol: HidBootProtocol::None,
     };
-    let hid_writer: HidWriter<'static, UsbDriver, 2> =
-        HidWriter::new(&mut builder, HID_STATE.init(HidState::new()), hid_config);
-
-    let usb = builder.build();
-
-    (usb, hid_writer)
+    HidWriter::new(builder, HID_STATE.init(HidState::new()), config)
 }
 
 #[embassy_executor::task]

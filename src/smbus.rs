@@ -43,6 +43,8 @@ const PMBUS_PROBE_COMMANDS: &[(&str, u8)] = &[
     ("MFR_REVISION", 0x9B),
 ];
 
+type Bus = I2c<'static, Async, i2c::Master>;
+
 /// Sets up I2C1 for the SMBus diagnostic scanner, ready to be spawned via
 /// [`scan_task`].
 pub fn init(
@@ -51,45 +53,60 @@ pub fn init(
     sda: Peri<'static, peripherals::PB7>,
     dma_tx: Peri<'static, peripherals::DMA1_CH6>,
     dma_rx: Peri<'static, peripherals::DMA1_CH7>,
-) -> I2c<'static, Async, i2c::Master> {
+) -> Bus {
     let mut config = i2c::Config::default();
     config.frequency = embassy_stm32::time::khz(100);
     I2c::new(i2c1, scl, sda, dma_tx, dma_rx, Irqs, config)
 }
 
 #[embassy_executor::task]
-pub async fn scan_task(mut i2c: I2c<'static, Async, i2c::Master>) -> ! {
+pub async fn scan_task(mut i2c: Bus) -> ! {
     // Give the PSU time to power up / the bus to settle after board reset.
     Timer::after(Duration::from_secs(2)).await;
 
     loop {
-        info!("=== SMBus scan starting ===");
-        for addr in 0x08u8..0x78 {
-            let mut probe = [0u8; 1];
-            let present = i2c.write_read(addr, &[0x00], &mut probe).await.is_ok()
-                || i2c.write(addr, &[]).await.is_ok();
-            if present {
-                info!("device found at address 0x{:02x}", addr);
-
-                for (name, cmd) in PMBUS_PROBE_COMMANDS {
-                    let mut buf = [0u8; 2];
-                    if i2c.write_read(addr, &[*cmd], &mut buf).await.is_ok() {
-                        info!("  0x{:02x} {}: {:02x}", cmd, name, buf);
-                    }
-                }
-
-                // Raw sweep fallback in case the PSU doesn't speak standard
-                // PMBus commands at all: dump every single-byte register
-                // reply we can get, for offline analysis.
-                for reg in 0x00u8..=0xFF {
-                    let mut buf = [0u8; 1];
-                    if i2c.write_read(addr, &[reg], &mut buf).await.is_ok() {
-                        info!("  raw[0x{:02x}] = 0x{:02x}", reg, buf[0]);
-                    }
-                }
-            }
-        }
-        info!("=== SMBus scan complete, sleeping ===");
+        scan_bus(&mut i2c).await;
         Timer::after(Duration::from_secs(30)).await;
+    }
+}
+
+/// Runs one full pass over every 7-bit address, logging whatever is found.
+async fn scan_bus(i2c: &mut Bus) {
+    info!("=== SMBus scan starting ===");
+    for addr in 0x08u8..0x78 {
+        // Cheaply check whether anything ACKs at `addr`, without assuming it
+        // speaks any particular command set.
+        let mut probe = [0u8; 1];
+        let present =
+            i2c.write_read(addr, &[0x00], &mut probe).await.is_ok() || i2c.write(addr, &[]).await.is_ok();
+
+        if present {
+            info!("device found at address 0x{:02x}", addr);
+            probe_pmbus_commands(i2c, addr).await;
+            raw_register_sweep(i2c, addr).await;
+        }
+    }
+    info!("=== SMBus scan complete, sleeping ===");
+}
+
+/// Reads every standard PMBus command in [`PMBUS_PROBE_COMMANDS`] from
+/// `addr` and logs whichever ones get a reply.
+async fn probe_pmbus_commands(i2c: &mut Bus, addr: u8) {
+    for (name, cmd) in PMBUS_PROBE_COMMANDS {
+        let mut buf = [0u8; 2];
+        if i2c.write_read(addr, &[*cmd], &mut buf).await.is_ok() {
+            info!("  0x{:02x} {}: {:02x}", cmd, name, buf);
+        }
+    }
+}
+
+/// Fallback for PSUs that don't speak standard PMBus commands: dumps every
+/// single-byte register reply we can get from `addr`, for offline analysis.
+async fn raw_register_sweep(i2c: &mut Bus, addr: u8) {
+    for reg in 0x00u8..=0xFF {
+        let mut buf = [0u8; 1];
+        if i2c.write_read(addr, &[reg], &mut buf).await.is_ok() {
+            info!("  raw[0x{:02x}] = 0x{:02x}", reg, buf[0]);
+        }
     }
 }
