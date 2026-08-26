@@ -2,22 +2,25 @@
 
 use core::sync::atomic::Ordering;
 
-use embassy_stm32::gpio::{AfioRemap, OutputType};
-use embassy_stm32::peripherals;
-use embassy_stm32::time::khz;
-use embassy_stm32::timer::low_level::CountingMode;
-use embassy_stm32::timer::simple_pwm::{PwmPin, SimplePwm, SimplePwmChannel};
-use embassy_stm32::timer::Ch1;
-use embassy_stm32::Peri;
+use mcu_hal::Peri;
+use mcu_hal::gpio::{AfioRemap, OutputType};
+use mcu_hal::time::khz;
+use mcu_hal::timer::Ch1;
+use mcu_hal::timer::low_level::CountingMode;
+use mcu_hal::timer::simple_pwm::{PwmPin, SimplePwm, SimplePwmChannel};
 
+use crate::board::{BacklightPin, BacklightTimer};
 use crate::hid;
 
-type Backlight = SimplePwmChannel<'static, peripherals::TIM1>;
+type Backlight = SimplePwmChannel<'static, BacklightTimer>;
 
 /// Sets up TIM1 CH1 as a 13 kHz PWM output on the given pin, with its duty
 /// cycle initialized from the current [`hid::BRIGHTNESS`]. Returns the
 /// enabled channel, ready to be spawned via [`task`].
-pub fn init(tim1: Peri<'static, peripherals::TIM1>, backlight_pin: Peri<'static, peripherals::PA8>) -> Backlight {
+pub fn init(
+    tim1: Peri<'static, BacklightTimer>,
+    backlight_pin: Peri<'static, BacklightPin>,
+) -> Backlight {
     let pwm = create_pwm(tim1, backlight_pin);
 
     let mut backlight = pwm.split().ch1;
@@ -29,10 +32,11 @@ pub fn init(tim1: Peri<'static, peripherals::TIM1>, backlight_pin: Peri<'static,
 }
 
 fn create_pwm(
-    tim1: Peri<'static, peripherals::TIM1>,
-    backlight_pin: Peri<'static, peripherals::PA8>,
-) -> SimplePwm<'static, peripherals::TIM1> {
-    let pwm_pin: PwmPin<'_, peripherals::TIM1, Ch1, AfioRemap<0>> = PwmPin::new(backlight_pin, OutputType::PushPull);
+    tim1: Peri<'static, BacklightTimer>,
+    backlight_pin: Peri<'static, BacklightPin>,
+) -> SimplePwm<'static, BacklightTimer> {
+    let pwm_pin: PwmPin<'_, BacklightTimer, Ch1, AfioRemap<0>> =
+        PwmPin::new(backlight_pin, OutputType::PushPull);
     SimplePwm::new(
         tim1,
         Some(pwm_pin),

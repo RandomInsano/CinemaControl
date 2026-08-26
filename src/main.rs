@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+mod board;
 mod hid;
 mod hid_tools;
 mod pwm;
@@ -8,14 +9,14 @@ mod smbus;
 mod storage;
 
 use embassy_executor::Spawner;
-use embassy_stm32::rcc::{Hse, HseMode, Pll, PllMul, PllPreDiv, PllSource, Sysclk};
-use embassy_stm32::Config;
+use mcu_hal::Config;
+use mcu_hal::rcc::{Hse, HseMode, Pll, PllMul, PllPreDiv, PllSource, Sysclk};
 use {defmt_rtt as _, panic_probe as _};
 
 fn clock_config() -> Config {
     let mut config = Config::default();
     config.rcc.hse = Some(Hse {
-        freq: embassy_stm32::time::mhz(8),
+        freq: mcu_hal::time::mhz(8),
         mode: HseMode::Oscillator,
     });
     config.rcc.pll = Some(Pll {
@@ -29,7 +30,7 @@ fn clock_config() -> Config {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> ! {
-    let p = embassy_stm32::init(clock_config());
+    let p = mcu_hal::init(clock_config());
 
     // --- Restore brightness saved from a previous power cycle, if any ---
     let mut store = storage::init(p.FLASH);

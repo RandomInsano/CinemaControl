@@ -4,10 +4,6 @@
 use core::sync::atomic::{AtomicI16, AtomicU16, Ordering};
 
 use defmt::warn;
-use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::peripherals;
-use embassy_stm32::usb::{self, Driver};
-use embassy_stm32::{Peri, bind_interrupts};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Timer;
@@ -17,12 +13,16 @@ use embassy_usb::class::hid::{
 };
 use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Config as UsbConfig, UsbDevice};
+use mcu_hal::gpio::{Level, Output, Speed};
+use mcu_hal::usb::{self, Driver};
+use mcu_hal::{Peri, bind_interrupts};
 use static_cell::StaticCell;
 
+use crate::board::{UsbDmPin, UsbDpPin, UsbPeripheral};
 use crate::hid_tools::{LoadLeBytes, Report};
 
 bind_interrupts!(struct Irqs {
-    USB_LP_CAN1_RX0 => usb::InterruptHandler<peripherals::USB>;
+    USB_LP_CAN1_RX0 => usb::InterruptHandler<UsbPeripheral>;
 });
 
 /// Current backlight brightness, 0..=1023. Source of truth for both the HID
@@ -155,7 +155,7 @@ impl RequestHandler for PsuHandler {
 
 /// Concrete USB driver type for this board, so task signatures elsewhere
 /// don't need to spell it out.
-pub type UsbDriver = Driver<'static, peripherals::USB>;
+pub type UsbDriver = Driver<'static, UsbPeripheral>;
 
 /// Everything spawned tasks need: the [`UsbDevice`] itself, and each HID
 /// interface's writer for pushing Input reports.
@@ -169,9 +169,9 @@ pub struct UsbPeripherals {
 /// brightness control, and a placeholder PSU telemetry interface. Ready to
 /// spawn via [`usb_task`], [`hid_report_task`] and [`psu_report_task`].
 pub async fn init(
-    usb: Peri<'static, peripherals::USB>,
-    mut dp: Peri<'static, peripherals::PA12>,
-    dm: Peri<'static, peripherals::PA11>,
+    usb: Peri<'static, UsbPeripheral>,
+    mut dp: Peri<'static, UsbDpPin>,
+    dm: Peri<'static, UsbDmPin>,
 ) -> UsbPeripherals {
     // Blue Pill quirk: PA12 (USB D+) has a fixed external 1.5k pull-up, so
     // the host may not notice a reset/re-flash as a fresh enumeration. Force

@@ -7,17 +7,18 @@
 //! issued to the PSU.
 
 use defmt::info;
-use embassy_stm32::i2c::{self, I2c};
-use embassy_stm32::mode::Async;
-use embassy_stm32::peripherals;
-use embassy_stm32::{bind_interrupts, Peri};
 use embassy_time::{Duration, Timer};
+use mcu_hal::i2c::{self, I2c};
+use mcu_hal::mode::Async;
+use mcu_hal::{Peri, bind_interrupts};
+
+use crate::board::{SmbusDmaRx, SmbusDmaTx, SmbusPeripheral, SmbusSclPin, SmbusSdaPin};
 
 bind_interrupts!(struct Irqs {
-    I2C1_EV => i2c::EventInterruptHandler<peripherals::I2C1>;
-    I2C1_ER => i2c::ErrorInterruptHandler<peripherals::I2C1>;
-    DMA1_CHANNEL6 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH6>;
-    DMA1_CHANNEL7 => embassy_stm32::dma::InterruptHandler<peripherals::DMA1_CH7>;
+    I2C1_EV => i2c::EventInterruptHandler<SmbusPeripheral>;
+    I2C1_ER => i2c::ErrorInterruptHandler<SmbusPeripheral>;
+    DMA1_CHANNEL6 => mcu_hal::dma::InterruptHandler<SmbusDmaTx>;
+    DMA1_CHANNEL7 => mcu_hal::dma::InterruptHandler<SmbusDmaRx>;
 });
 
 /// Standard PMBus command codes to probe on any address that ACKs, so we can
@@ -48,14 +49,14 @@ type Bus = I2c<'static, Async, i2c::Master>;
 /// Sets up I2C1 for the SMBus diagnostic scanner, ready to be spawned via
 /// [`scan_task`].
 pub fn init(
-    i2c1: Peri<'static, peripherals::I2C1>,
-    scl: Peri<'static, peripherals::PB6>,
-    sda: Peri<'static, peripherals::PB7>,
-    dma_tx: Peri<'static, peripherals::DMA1_CH6>,
-    dma_rx: Peri<'static, peripherals::DMA1_CH7>,
+    i2c1: Peri<'static, SmbusPeripheral>,
+    scl: Peri<'static, SmbusSclPin>,
+    sda: Peri<'static, SmbusSdaPin>,
+    dma_tx: Peri<'static, SmbusDmaTx>,
+    dma_rx: Peri<'static, SmbusDmaRx>,
 ) -> Bus {
     let mut config = i2c::Config::default();
-    config.frequency = embassy_stm32::time::khz(100);
+    config.frequency = mcu_hal::time::khz(100);
     I2c::new(i2c1, scl, sda, dma_tx, dma_rx, Irqs, config)
 }
 
@@ -77,8 +78,8 @@ async fn scan_bus(i2c: &mut Bus) {
         // Cheaply check whether anything ACKs at `addr`, without assuming it
         // speaks any particular command set.
         let mut probe = [0u8; 1];
-        let present =
-            i2c.write_read(addr, &[0x00], &mut probe).await.is_ok() || i2c.write(addr, &[]).await.is_ok();
+        let present = i2c.write_read(addr, &[0x00], &mut probe).await.is_ok()
+            || i2c.write(addr, &[]).await.is_ok();
 
         if present {
             info!("device found at address 0x{:02x}", addr);

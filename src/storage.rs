@@ -12,13 +12,13 @@ use core::ops::Range;
 
 use defmt::warn;
 use embassy_embedded_hal::adapter::BlockingAsync;
-use embassy_stm32::flash::{Blocking, Flash};
-use embassy_stm32::peripherals;
-use embassy_stm32::Peri;
 use embassy_time::{Duration, Timer};
+use mcu_hal::Peri;
+use mcu_hal::flash::{Blocking, Flash};
 use sequential_storage::cache::{Cache, Uncached};
 use sequential_storage::map::{MapConfig, MapStorage};
 
+use crate::board::FlashPeripheral;
 use crate::hid;
 
 /// Last two 1 KiB pages of the 64 KiB part; `memory.x` reserves them by
@@ -27,9 +27,13 @@ const FLASH_RANGE: Range<u32> = 62 * 1024..64 * 1024;
 
 const DEBOUNCE: Duration = Duration::from_secs(30);
 
-type Store = MapStorage<(), BlockingAsync<Flash<'static, Blocking>>, Cache<Uncached, Uncached, Uncached, ()>>;
+type Store = MapStorage<
+    (),
+    BlockingAsync<Flash<'static, Blocking>>,
+    Cache<Uncached, Uncached, Uncached, ()>,
+>;
 
-pub fn init(flash: Peri<'static, peripherals::FLASH>) -> Store {
+pub fn init(flash: Peri<'static, FlashPeripheral>) -> Store {
     MapStorage::new(
         BlockingAsync::new(Flash::new_blocking(flash)),
         const { MapConfig::new(FLASH_RANGE) },
@@ -59,10 +63,10 @@ pub async fn task(mut store: Store) -> ! {
         // Debounce window: absorb further changes, then write once more at
         // the end if the value moved again during it.
         Timer::after(DEBOUNCE).await;
-        if let Some(v) = hid::BRIGHTNESS_CHANGED.try_take() {
-            if v != saved {
-                save(&mut store, v).await;
-            }
+        if let Some(v) = hid::BRIGHTNESS_CHANGED.try_take()
+            && v != saved
+        {
+            save(&mut store, v).await;
         }
     }
 }
