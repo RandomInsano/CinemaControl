@@ -2,6 +2,7 @@
 #![no_main]
 
 mod hid;
+mod hid_tools;
 mod pwm;
 mod smbus;
 mod storage;

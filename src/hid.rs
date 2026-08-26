@@ -19,6 +19,8 @@ use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Config as UsbConfig, UsbDevice};
 use static_cell::StaticCell;
 
+use crate::hid_tools::{LoadLeBytes, Report};
+
 bind_interrupts!(struct Irqs {
     USB_LP_CAN1_RX0 => usb::InterruptHandler<peripherals::USB>;
 });
@@ -108,9 +110,9 @@ impl RequestHandler for BrightnessHandler {
     fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
         match id {
             ReportId::Feature(_) | ReportId::In(_) => {
-                let v = BRIGHTNESS.load(Ordering::Relaxed);
-                buf[0..2].copy_from_slice(&v.to_le_bytes());
-                Some(2)
+                let mut report = Report::new(buf);
+                report.field(&BRIGHTNESS);
+                Some(report.len())
             }
             _ => None,
         }
@@ -139,11 +141,12 @@ impl RequestHandler for PsuHandler {
     fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
         match id {
             ReportId::Feature(_) | ReportId::In(_) => {
-                buf[0..2].copy_from_slice(&PSU_VOLTAGE_MV.load(Ordering::Relaxed).to_le_bytes());
-                buf[2..4].copy_from_slice(&PSU_CURRENT_MA.load(Ordering::Relaxed).to_le_bytes());
-                buf[4..6]
-                    .copy_from_slice(&PSU_TEMPERATURE_DECIC.load(Ordering::Relaxed).to_le_bytes());
-                Some(6)
+                let mut report = Report::new(buf);
+                report
+                    .field(&PSU_VOLTAGE_MV)
+                    .field(&PSU_CURRENT_MA)
+                    .field(&PSU_TEMPERATURE_DECIC);
+                Some(report.len())
             }
             _ => None,
         }
@@ -270,8 +273,7 @@ pub async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) -> ! {
 pub async fn hid_report_task(mut writer: HidWriter<'static, UsbDriver, 2>) -> ! {
     writer.ready().await;
     loop {
-        let v = BRIGHTNESS.load(Ordering::Relaxed);
-        if let Err(e) = writer.write(&v.to_le_bytes()).await {
+        if let Err(e) = writer.write(&BRIGHTNESS.load_le_bytes()).await {
             warn!("hid input report write failed: {:?}", e);
         }
         Timer::after_millis(200).await;
@@ -282,11 +284,12 @@ pub async fn hid_report_task(mut writer: HidWriter<'static, UsbDriver, 2>) -> ! 
 pub async fn psu_report_task(mut writer: HidWriter<'static, UsbDriver, 6>) -> ! {
     writer.ready().await;
     loop {
-        let mut report = [0u8; 6];
-        report[0..2].copy_from_slice(&PSU_VOLTAGE_MV.load(Ordering::Relaxed).to_le_bytes());
-        report[2..4].copy_from_slice(&PSU_CURRENT_MA.load(Ordering::Relaxed).to_le_bytes());
-        report[4..6].copy_from_slice(&PSU_TEMPERATURE_DECIC.load(Ordering::Relaxed).to_le_bytes());
-        if let Err(e) = writer.write(&report).await {
+        let mut report_buf = [0u8; 6];
+        Report::new(&mut report_buf)
+            .field(&PSU_VOLTAGE_MV)
+            .field(&PSU_CURRENT_MA)
+            .field(&PSU_TEMPERATURE_DECIC);
+        if let Err(e) = writer.write(&report_buf).await {
             warn!("psu input report write failed: {:?}", e);
         }
         Timer::after_millis(1000).await;

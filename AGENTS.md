@@ -28,6 +28,13 @@ called from one place, don't extract it — leave it inline at the call site
 (with a comment above it if it needs a *why*, per the Comments section
 above).
 
+`src/hid_tools.rs` is a plain shared-utility module (the `LoadLeBytes` trait
+and `Report` builder used by `src/hid.rs` to build report bytes without
+manual slice-range math) — not a peripheral subsystem, so it has no
+`bind_interrupts!`/`init()`/task shape. Put other non-peripheral, reusable
+helpers alongside it rather than growing `hid.rs`/etc. with things that
+aren't about the peripheral itself.
+
 ## Build
 
 `cargo build --release` targets `thumbv7m-none-eabi` (Blue Pill /
