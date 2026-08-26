@@ -37,10 +37,11 @@ async fn main(spawner: Spawner) -> ! {
     }
     spawner.spawn(storage::task(store).unwrap());
 
-    // --- USB HID (VESA Monitor brightness) ---
-    let (usb, hid_writer) = hid::init(p.USB, p.PA12, p.PA11).await;
-    spawner.spawn(hid::usb_task(usb).unwrap());
-    spawner.spawn(hid::hid_report_task(hid_writer).unwrap());
+    // --- USB HID (VESA Monitor brightness + PSU telemetry) ---
+    let usb = hid::init(p.USB, p.PA12, p.PA11).await;
+    spawner.spawn(hid::usb_task(usb.usb).unwrap());
+    spawner.spawn(hid::hid_report_task(usb.brightness_writer).unwrap());
+    spawner.spawn(hid::psu_report_task(usb.psu_writer).unwrap());
 
     // --- Backlight PWM: TIM1 CH1 / PA8, 13 kHz ---
     let backlight = pwm::init(p.TIM1, p.PA8);

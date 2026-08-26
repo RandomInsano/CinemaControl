@@ -50,3 +50,13 @@ has no async flash driver for F1, so the blocking `Flash` is wrapped in
 The PSU's register map is undocumented. `src/smbus.rs` is a **read-only**
 diagnostic scanner, not a real driver — no writes to the PSU. Don't add
 writes until we have real bus captures confirming what's safe to send.
+
+`src/hid.rs`'s second HID interface (Voltage/Current/Temperature,
+`PSU_REPORT_DESCRIPTOR`) is the placeholder wire format for that telemetry —
+`PSU_VOLTAGE_MV` / `PSU_CURRENT_MA` / `PSU_TEMPERATURE_DECIC` are `pub` so
+that once `smbus.rs` can actually parse a PMBus reply, it can just `.store()`
+into them directly; nothing populates them yet. The descriptor deliberately
+uses HID Power Device Usage 0x05 "PowerSupply", not 0x04 "UPS" — this is
+telemetry from an internal PSU, not a battery-backup device, and tagging it
+UPS could make a host treat it like one (e.g. offer battery-loss shutdown
+behavior).

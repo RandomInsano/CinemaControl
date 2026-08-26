@@ -13,7 +13,7 @@ embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "execu
 embassy-stm32 = { version = "0.6.0", features = ["stm32f103c8", "time-driver-any", "defmt"] }
 embassy-sync = { version = "0.8.0", features = ["defmt"] }
 embassy-time = { version = "0.5.1", features = ["defmt"] }
-embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt", "max-handler-count-1", "max-interface-count-1"] }
+embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt", "max-handler-count-2", "max-interface-count-2"] }
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 sequential-storage = { version = "8.0.1", features = ["defmt"] }
 static_cell = "2.1.1"

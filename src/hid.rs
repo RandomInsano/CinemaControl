@@ -1,17 +1,19 @@
-//! USB HID: VESA/USB Monitor Control Class brightness control.
+//! USB HID: VESA/USB Monitor Control Class brightness control, plus a
+//! placeholder HID Power Device (PSU telemetry) interface.
 
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::{AtomicI16, AtomicU16, Ordering};
 
 use defmt::warn;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::peripherals;
 use embassy_stm32::usb::{self, Driver};
-use embassy_stm32::{bind_interrupts, Peri};
+use embassy_stm32::{Peri, bind_interrupts};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Timer;
 use embassy_usb::class::hid::{
-    Config as HidConfig, HidBootProtocol, HidSubclass, HidWriter, ReportId, RequestHandler, State as HidState,
+    Config as HidConfig, HidBootProtocol, HidSubclass, HidWriter, ReportId, RequestHandler,
+    State as HidState,
 };
 use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Config as UsbConfig, UsbDevice};
@@ -35,6 +37,13 @@ pub fn restore_brightness(value: u16) {
     BRIGHTNESS.store(value.min(MAX_BRIGHTNESS), Ordering::Relaxed);
 }
 
+/// Placeholder PA-2311-02A telemetry, exposed over HID so the wire format
+/// exists before we know how to actually read it (see `src/smbus.rs`). All
+/// zero until something populates them from a real PMBus read.
+pub static PSU_VOLTAGE_MV: AtomicU16 = AtomicU16::new(0);
+pub static PSU_CURRENT_MA: AtomicU16 = AtomicU16::new(0);
+pub static PSU_TEMPERATURE_DECIC: AtomicI16 = AtomicI16::new(0);
+
 /// VESA/USB Monitor Control Class HID report descriptor: a single Monitor
 /// Control application collection (Usage Page 0x80, Usage 0x01) containing a
 /// VESA Virtual Controls Brightness usage (Usage Page 0x82, Usage 0x10, VCP
@@ -44,7 +53,7 @@ pub fn restore_brightness(value: u16) {
 /// structure real-world implementations (e.g. Apple Studio Display, Linux's
 /// hid_bl VESA VCP backlight driver) match against.
 #[rustfmt::skip]
-const HID_REPORT_DESCRIPTOR: &[u8] = &[
+const MONITOR_REPORT_DESCRIPTOR: &[u8] = &[
     0x05, 0x80,       // Usage Page (Monitor)
     0x09, 0x01,       // Usage (Monitor Control)
     0xA1, 0x01,       // Collection (Application)
@@ -56,6 +65,39 @@ const HID_REPORT_DESCRIPTOR: &[u8] = &[
     0x95, 0x01,       //   Report Count (1)
     0x81, 0x02,       //   Input (Data,Var,Abs)
     0x09, 0x10,       //   Usage (Brightness / VCP 0x10)
+    0xB1, 0x02,       //   Feature (Data,Var,Abs)
+    0xC0,             // End Collection
+];
+
+/// HID Power Device report descriptor (Usage Page 0x84, Usage 0x05
+/// "PowerSupply" — deliberately not 0x04 "UPS", since this isn't a
+/// battery-backup device and shouldn't be treated like one). No Report IDs:
+/// it's the only report this interface has, so Voltage + Current +
+/// Temperature just concatenate into one 6-byte Input and one 6-byte
+/// Feature report. Temperature is signed tenths of a degree C (-40.0 to
+/// 150.0); Voltage/Current are unsigned millivolts/milliamps.
+#[rustfmt::skip]
+const PSU_REPORT_DESCRIPTOR: &[u8] = &[
+    0x05, 0x84,       // Usage Page (Power Device)
+    0x09, 0x05,       // Usage (PowerSupply)
+    0xA1, 0x01,       // Collection (Application)
+    0x15, 0x00,       //   Logical Minimum (0)
+    0x26, 0xFF, 0x7F, //   Logical Maximum (32767)
+    0x75, 0x10,       //   Report Size (16)
+    0x95, 0x01,       //   Report Count (1)
+    0x09, 0x30,       //   Usage (Voltage)
+    0x81, 0x02,       //   Input (Data,Var,Abs)
+    0x09, 0x30,       //   Usage (Voltage)
+    0xB1, 0x02,       //   Feature (Data,Var,Abs)
+    0x09, 0x31,       //   Usage (Current)
+    0x81, 0x02,       //   Input (Data,Var,Abs)
+    0x09, 0x31,       //   Usage (Current)
+    0xB1, 0x02,       //   Feature (Data,Var,Abs)
+    0x16, 0x70, 0xFE, //   Logical Minimum (-400)
+    0x26, 0xDC, 0x05, //   Logical Maximum (1500)
+    0x09, 0x36,       //   Usage (Temperature)
+    0x81, 0x02,       //   Input (Data,Var,Abs)
+    0x09, 0x36,       //   Usage (Temperature)
     0xB1, 0x02,       //   Feature (Data,Var,Abs)
     0xC0,             // End Collection
 ];
@@ -88,18 +130,46 @@ impl RequestHandler for BrightnessHandler {
     }
 }
 
+/// Read-only: reports whatever's in the PSU telemetry statics, rejects
+/// writes. Consistent with `src/smbus.rs` staying read-only until we
+/// actually know the PA-2311-02A's register map.
+struct PsuHandler;
+
+impl RequestHandler for PsuHandler {
+    fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
+        match id {
+            ReportId::Feature(_) | ReportId::In(_) => {
+                buf[0..2].copy_from_slice(&PSU_VOLTAGE_MV.load(Ordering::Relaxed).to_le_bytes());
+                buf[2..4].copy_from_slice(&PSU_CURRENT_MA.load(Ordering::Relaxed).to_le_bytes());
+                buf[4..6]
+                    .copy_from_slice(&PSU_TEMPERATURE_DECIC.load(Ordering::Relaxed).to_le_bytes());
+                Some(6)
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Concrete USB driver type for this board, so task signatures elsewhere
 /// don't need to spell it out.
 pub type UsbDriver = Driver<'static, peripherals::USB>;
 
-/// Sets up the USB HID VESA Monitor interface. Returns the built
-/// [`UsbDevice`] and its HID writer, ready to be spawned as tasks via
-/// [`usb_task`] and [`hid_report_task`].
+/// Everything spawned tasks need: the [`UsbDevice`] itself, and each HID
+/// interface's writer for pushing Input reports.
+pub struct UsbPeripherals {
+    pub usb: UsbDevice<'static, UsbDriver>,
+    pub brightness_writer: HidWriter<'static, UsbDriver, 2>,
+    pub psu_writer: HidWriter<'static, UsbDriver, 6>,
+}
+
+/// Sets up the USB device with two HID interfaces: the VESA Monitor
+/// brightness control, and a placeholder PSU telemetry interface. Ready to
+/// spawn via [`usb_task`], [`hid_report_task`] and [`psu_report_task`].
 pub async fn init(
     usb: Peri<'static, peripherals::USB>,
     mut dp: Peri<'static, peripherals::PA12>,
     dm: Peri<'static, peripherals::PA11>,
-) -> (UsbDevice<'static, UsbDriver>, HidWriter<'static, UsbDriver, 2>) {
+) -> UsbPeripherals {
     // Blue Pill quirk: PA12 (USB D+) has a fixed external 1.5k pull-up, so
     // the host may not notice a reset/re-flash as a fresh enumeration. Force
     // a bus disconnect by briefly driving D+ low ourselves before handing
@@ -112,12 +182,31 @@ pub async fn init(
     let usb_driver = Driver::new(usb, Irqs, dp, dm);
     let mut builder = usb_builder(usb_driver);
 
-    static HANDLER: StaticCell<BrightnessHandler> = StaticCell::new();
-    let hid_writer = build_hid_writer(&mut builder, HANDLER.init(BrightnessHandler));
+    static BRIGHTNESS_HANDLER: StaticCell<BrightnessHandler> = StaticCell::new();
+    static BRIGHTNESS_STATE: StaticCell<HidState> = StaticCell::new();
+    let brightness_writer = build_hid_writer(
+        &mut builder,
+        MONITOR_REPORT_DESCRIPTOR,
+        BRIGHTNESS_HANDLER.init(BrightnessHandler),
+        BRIGHTNESS_STATE.init(HidState::new()),
+    );
+
+    static PSU_HANDLER: StaticCell<PsuHandler> = StaticCell::new();
+    static PSU_STATE: StaticCell<HidState> = StaticCell::new();
+    let psu_writer = build_hid_writer(
+        &mut builder,
+        PSU_REPORT_DESCRIPTOR,
+        PSU_HANDLER.init(PsuHandler),
+        PSU_STATE.init(HidState::new()),
+    );
 
     let usb = builder.build();
 
-    (usb, hid_writer)
+    UsbPeripherals {
+        usb,
+        brightness_writer,
+        psu_writer,
+    }
 }
 
 fn usb_device_config() -> UsbConfig<'static> {
@@ -153,23 +242,23 @@ fn usb_builder(usb_driver: UsbDriver) -> Builder<'static, UsbDriver> {
     )
 }
 
-/// Registers the VESA Monitor HID interface on `builder` and returns its
-/// writer for pushing Input reports.
-fn build_hid_writer(
+/// Registers one HID interface on `builder` and returns its writer for
+/// pushing Input reports.
+fn build_hid_writer<const N: usize>(
     builder: &mut Builder<'static, UsbDriver>,
-    handler: &'static mut BrightnessHandler,
-) -> HidWriter<'static, UsbDriver, 2> {
-    static HID_STATE: StaticCell<HidState> = StaticCell::new();
-
+    report_descriptor: &'static [u8],
+    request_handler: &'static mut dyn RequestHandler,
+    state: &'static mut HidState<'static>,
+) -> HidWriter<'static, UsbDriver, N> {
     let config = HidConfig {
-        report_descriptor: HID_REPORT_DESCRIPTOR,
-        request_handler: Some(handler),
+        report_descriptor,
+        request_handler: Some(request_handler),
         poll_ms: 60,
         max_packet_size: 8,
         hid_subclass: HidSubclass::No,
         hid_boot_protocol: HidBootProtocol::None,
     };
-    HidWriter::new(builder, HID_STATE.init(HidState::new()), config)
+    HidWriter::new(builder, state, config)
 }
 
 #[embassy_executor::task]
@@ -186,5 +275,20 @@ pub async fn hid_report_task(mut writer: HidWriter<'static, UsbDriver, 2>) -> ! 
             warn!("hid input report write failed: {:?}", e);
         }
         Timer::after_millis(200).await;
+    }
+}
+
+#[embassy_executor::task]
+pub async fn psu_report_task(mut writer: HidWriter<'static, UsbDriver, 6>) -> ! {
+    writer.ready().await;
+    loop {
+        let mut report = [0u8; 6];
+        report[0..2].copy_from_slice(&PSU_VOLTAGE_MV.load(Ordering::Relaxed).to_le_bytes());
+        report[2..4].copy_from_slice(&PSU_CURRENT_MA.load(Ordering::Relaxed).to_le_bytes());
+        report[4..6].copy_from_slice(&PSU_TEMPERATURE_DECIC.load(Ordering::Relaxed).to_le_bytes());
+        if let Err(e) = writer.write(&report).await {
+            warn!("psu input report write failed: {:?}", e);
+        }
+        Timer::after_millis(1000).await;
     }
 }
