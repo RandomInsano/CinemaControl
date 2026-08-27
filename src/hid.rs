@@ -13,11 +13,9 @@ use embassy_usb::class::hid::{
 };
 use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Config as UsbConfig, UsbDevice};
-use mcu_hal::Peri;
-use mcu_hal::usb::Driver;
 use static_cell::StaticCell;
 
-use crate::board::{Irqs, UsbPeripheral};
+use crate::board::UsbDriver;
 use crate::hid_tools::{LoadLeBytes, Report};
 
 /// Current backlight brightness, 0..=1023. Source of truth for both the HID
@@ -148,10 +146,6 @@ impl RequestHandler for PsuHandler {
     }
 }
 
-/// Concrete USB driver type for this board, so task signatures elsewhere
-/// don't need to spell it out.
-pub type UsbDriver = Driver<'static, UsbPeripheral>;
-
 /// Everything spawned tasks need: the [`UsbDevice`] itself, and each HID
 /// interface's writer for pushing Input reports.
 pub struct UsbPeripherals {
@@ -163,8 +157,7 @@ pub struct UsbPeripherals {
 /// Sets up the USB device with two HID interfaces: the VESA Monitor
 /// brightness control, and a placeholder PSU telemetry interface. Ready to
 /// spawn via [`usb_task`], [`hid_report_task`] and [`psu_report_task`].
-pub fn init(usb: Peri<'static, UsbPeripheral>) -> UsbPeripherals {
-    let usb_driver = Driver::new(usb, Irqs);
+pub fn init(usb_driver: UsbDriver) -> UsbPeripherals {
     let mut builder = usb_builder(usb_driver);
 
     static BRIGHTNESS_HANDLER: StaticCell<BrightnessHandler> = StaticCell::new();

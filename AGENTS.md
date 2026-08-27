@@ -12,27 +12,31 @@ requirement, a constraint that isn't visible in the code itself).
 
 ## Structure
 
-Each peripheral subsystem is its own module (`src/hid.rs`, `src/pwm.rs`,
-`src/smbus.rs`, `src/storage.rs`), each with an `init()` that takes
-whatever `src/board.rs` gives it for that peripheral and returns whatever's
-ready to spawn, plus its `#[embassy_executor::task]` function(s). Where a
-peripheral needs more than one `Peri` (a slice + pin, an I2C instance + two
-pins, flash + its DMA channel), `board.rs` groups them into a resource
-struct (`BacklightResources`, `SmbusResources`, `FlashResources`) and
-`init()` takes that struct as its one argument — USB is simple enough to
-stay a bare `Peri<'static, UsbPeripheral>`. This means adding or dropping a
-pin for some peripheral means editing its resource struct in `board.rs`, not
-every call site's parameter list. `board::split()` owns calling
-`mcu_hal::init(clock_config())` and handing out the result as a `Board`, so
-`src/main.rs` is pure orchestration: `board::split()`, calling each module's
-`init()`, spawning tasks. Keep it that way — don't add peripheral setup
-directly in `main()`, and don't reach into `mcu_hal::Peripherals` fields
-outside `board::split()`.
+`src/board.rs` owns all hardware bring-up: `board::split()` calls
+`mcu_hal::init(clock_config())` and turns every raw peripheral into the
+driver abstraction its module actually uses (`UsbDriver`, `Backlight` (a
+`Pwm`), `SmbusBus`, `BoardFlash`), bundled into a `Board`. No other module
+calls a driver's `new()`, reaches into `mcu_hal::Peripherals` fields, or
+sees `mcu_hal::peripherals` types at all — `board.rs` is the only place raw
+chip/pin names and `bind_interrupts!`'s PAC-defined vector names
+(`USBCTRL_IRQ`, `I2C0_IRQ`, ...) appear, so porting to a different chip or
+pinout means editing this file — plus the `embassy-rp` chip feature in
+`Cargo.toml` and the clock config in `main.rs`, both inherently
+chip-specific — and nothing else.
 
-All interrupt vectors are bound in one place — `board::Irqs` — rather than
-per-module, since the PAC-defined vector names (`USBCTRL_IRQ`, `I2C0_IRQ`,
-...) are exactly the kind of chip-specific identifier `board.rs` exists to
-contain; each module just imports `crate::board::Irqs`.
+Each peripheral subsystem is its own module (`src/hid.rs`, `src/pwm.rs`,
+`src/smbus.rs`, `src/storage.rs`) that takes its already-brought-up driver
+from `Board` and does only its own domain logic on top: `hid.rs` builds the
+USB descriptors/HID interfaces, `pwm.rs` seeds the duty cycle from
+`hid::BRIGHTNESS`, `storage.rs` wraps the flash in `sequential-storage`'s
+`MapStorage`. `smbus.rs` has nothing left to add on top, so it has no
+`init()` at all — `main.rs` spawns `smbus::scan_task(p.smbus)` directly.
+`board.rs` never reads another module's state (e.g. `hid::BRIGHTNESS`) to do
+this — that's specifically why seeding the backlight's initial duty cycle
+stays in `pwm.rs` rather than moving into `split()` with the rest of the PWM
+setup. `src/main.rs` is pure orchestration: `board::split()`, calling each
+module's `init()`, spawning tasks. Keep it that way — don't add peripheral
+setup directly in `main()`.
 
 Keep functions small and single-purpose; prefer several small named
 functions over one that mixes concerns (see how `hid::init` delegates to

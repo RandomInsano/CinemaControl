@@ -11,15 +11,11 @@
 use core::ops::Range;
 
 use defmt::warn;
-use mcu_hal::flash::{Async, Flash};
 use sequential_storage::cache::{Cache, Uncached};
 use sequential_storage::map::{MapConfig, MapStorage};
 
-use crate::board::{FlashPeripheral, FlashResources, Irqs};
+use crate::board::{BoardFlash, FLASH_SIZE};
 use crate::hid;
-
-/// Total size of the Pico's onboard QSPI flash.
-const FLASH_SIZE: usize = 2 * 1024 * 1024;
 
 /// Last two 4 KiB erase sectors; `memory.x` reserves them by ending the
 /// linker's `FLASH` region 8K early.
@@ -27,15 +23,11 @@ const FLASH_RANGE: Range<u32> = (FLASH_SIZE as u32 - 8 * 1024)..FLASH_SIZE as u3
 
 const DEBOUNCE: embassy_time::Duration = embassy_time::Duration::from_secs(30);
 
-type Store = MapStorage<
-    (),
-    Flash<'static, FlashPeripheral, Async, FLASH_SIZE>,
-    Cache<Uncached, Uncached, Uncached, ()>,
->;
+type Store = MapStorage<(), BoardFlash, Cache<Uncached, Uncached, Uncached, ()>>;
 
-pub fn init(resources: FlashResources) -> Store {
+pub fn init(flash: BoardFlash) -> Store {
     MapStorage::new(
-        Flash::new(resources.flash, resources.dma, Irqs),
+        flash,
         const { MapConfig::new(FLASH_RANGE) },
         Cache::new_uncached(),
     )

@@ -9,9 +9,8 @@
 use defmt::info;
 use embassy_time::{Duration, Timer};
 use embedded_hal_async::i2c::I2c as _;
-use mcu_hal::i2c::{self, Async, I2c};
 
-use crate::board::{Irqs, SmbusPeripheral, SmbusResources};
+use crate::board::SmbusBus;
 
 /// Standard PMBus command codes to probe on any address that ACKs, so we can
 /// map the PA-2311-02A's (undocumented) register set from real bus captures.
@@ -36,18 +35,8 @@ const PMBUS_PROBE_COMMANDS: &[(&str, u8)] = &[
     ("MFR_REVISION", 0x9B),
 ];
 
-type Bus = I2c<'static, SmbusPeripheral, Async>;
-
-/// Sets up I2C0 for the SMBus diagnostic scanner, ready to be spawned via
-/// [`scan_task`].
-pub fn init(resources: SmbusResources) -> Bus {
-    let mut config = i2c::Config::default();
-    config.frequency = 100_000;
-    I2c::new_async(resources.i2c, resources.scl, resources.sda, Irqs, config)
-}
-
 #[embassy_executor::task]
-pub async fn scan_task(mut i2c: Bus) -> ! {
+pub async fn scan_task(mut i2c: SmbusBus) -> ! {
     // Give the PSU time to power up / the bus to settle after board reset.
     Timer::after(Duration::from_secs(2)).await;
 
@@ -58,7 +47,7 @@ pub async fn scan_task(mut i2c: Bus) -> ! {
 }
 
 /// Runs one full pass over every 7-bit address, logging whatever is found.
-async fn scan_bus(i2c: &mut Bus) {
+async fn scan_bus(i2c: &mut SmbusBus) {
     info!("=== SMBus scan starting ===");
     for addr in 0x08u8..0x78 {
         // Cheaply check whether anything ACKs at `addr`, without assuming it
@@ -78,7 +67,7 @@ async fn scan_bus(i2c: &mut Bus) {
 
 /// Reads every standard PMBus command in [`PMBUS_PROBE_COMMANDS`] from
 /// `addr` and logs whichever ones get a reply.
-async fn probe_pmbus_commands(i2c: &mut Bus, addr: u8) {
+async fn probe_pmbus_commands(i2c: &mut SmbusBus, addr: u8) {
     for (name, cmd) in PMBUS_PROBE_COMMANDS {
         let mut buf = [0u8; 2];
         if i2c.write_read(addr, &[*cmd], &mut buf).await.is_ok() {
@@ -89,7 +78,7 @@ async fn probe_pmbus_commands(i2c: &mut Bus, addr: u8) {
 
 /// Fallback for PSUs that don't speak standard PMBus commands: dumps every
 /// single-byte register reply we can get from `addr`, for offline analysis.
-async fn raw_register_sweep(i2c: &mut Bus, addr: u8) {
+async fn raw_register_sweep(i2c: &mut SmbusBus, addr: u8) {
     for reg in 0x00u8..=0xFF {
         let mut buf = [0u8; 1];
         if i2c.write_read(addr, &[reg], &mut buf).await.is_ok() {

@@ -1,40 +1,22 @@
-//! Backlight PWM: PWM slice 7 channel B, 13 kHz, duty driven by the HID
-//! brightness value.
+//! Backlight PWM: duty driven by the HID brightness value. Frequency/pin
+//! bring-up lives in `board.rs`; this module only owns the duty cycle.
 
 use core::sync::atomic::Ordering;
 
-use mcu_hal::pwm::{Config, Pwm, SetDutyCycle};
+use mcu_hal::pwm::SetDutyCycle;
 
-use crate::board::BacklightResources;
+use crate::board::Backlight;
 use crate::hid;
 
-type Backlight = Pwm<'static>;
-
-const FREQUENCY_HZ: u32 = 13_000;
-
-/// Sets up the board's backlight slice/pin as a 13 kHz PWM output, with its
-/// duty cycle initialized from the current [`hid::BRIGHTNESS`]. Ready to be
-/// spawned via [`task`].
-pub fn init(resources: BacklightResources) -> Backlight {
-    let mut backlight = create_pwm(resources);
-
+/// Seeds the board's backlight PWM with the current [`hid::BRIGHTNESS`].
+/// Ready to be spawned via [`task`].
+pub fn init(mut backlight: Backlight) -> Backlight {
     let brightness = hid::BRIGHTNESS.load(Ordering::Relaxed);
     backlight
         .set_duty_cycle(scale_to_duty(brightness, backlight.max_duty_cycle()))
         .unwrap();
 
     backlight
-}
-
-fn create_pwm(resources: BacklightResources) -> Backlight {
-    let divider: u8 = 1;
-    let top = (mcu_hal::clocks::clk_sys_freq() / (FREQUENCY_HZ * divider as u32)) as u16 - 1;
-
-    let mut config = Config::default();
-    config.divider = divider.into();
-    config.top = top;
-
-    Pwm::new_output_b(resources.slice, resources.pin, config)
 }
 
 fn scale_to_duty(brightness: u16, max_duty: u16) -> u16 {

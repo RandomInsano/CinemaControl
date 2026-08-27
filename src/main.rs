@@ -38,8 +38,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(pwm::task(backlight).unwrap());
 
     // --- SMBus diagnostic scanner for the PA-2311-02A PSU (read-only) ---
-    let i2c = smbus::init(p.smbus);
-    spawner.spawn(smbus::scan_task(i2c).unwrap());
+    spawner.spawn(smbus::scan_task(p.smbus).unwrap());
 
     core::future::pending::<()>().await;
     unreachable!()
