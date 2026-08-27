@@ -13,17 +13,12 @@ use embassy_usb::class::hid::{
 };
 use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Config as UsbConfig, UsbDevice};
-use mcu_hal::gpio::{Level, Output, Speed};
-use mcu_hal::usb::{self, Driver};
-use mcu_hal::{Peri, bind_interrupts};
+use mcu_hal::Peri;
+use mcu_hal::usb::Driver;
 use static_cell::StaticCell;
 
-use crate::board::{UsbDmPin, UsbDpPin, UsbPeripheral};
+use crate::board::{Irqs, UsbPeripheral};
 use crate::hid_tools::{LoadLeBytes, Report};
-
-bind_interrupts!(struct Irqs {
-    USB_LP_CAN1_RX0 => usb::InterruptHandler<UsbPeripheral>;
-});
 
 /// Current backlight brightness, 0..=1023. Source of truth for both the HID
 /// Feature/Input report and the PWM duty cycle.
@@ -168,21 +163,8 @@ pub struct UsbPeripherals {
 /// Sets up the USB device with two HID interfaces: the VESA Monitor
 /// brightness control, and a placeholder PSU telemetry interface. Ready to
 /// spawn via [`usb_task`], [`hid_report_task`] and [`psu_report_task`].
-pub async fn init(
-    usb: Peri<'static, UsbPeripheral>,
-    mut dp: Peri<'static, UsbDpPin>,
-    dm: Peri<'static, UsbDmPin>,
-) -> UsbPeripherals {
-    // Blue Pill quirk: PA12 (USB D+) has a fixed external 1.5k pull-up, so
-    // the host may not notice a reset/re-flash as a fresh enumeration. Force
-    // a bus disconnect by briefly driving D+ low ourselves before handing
-    // the pin to the USB peripheral.
-    {
-        let _dp = Output::new(dp.reborrow(), Level::Low, Speed::Low);
-        Timer::after_millis(10).await;
-    }
-
-    let usb_driver = Driver::new(usb, Irqs, dp, dm);
+pub fn init(usb: Peri<'static, UsbPeripheral>) -> UsbPeripherals {
+    let usb_driver = Driver::new(usb, Irqs);
     let mut builder = usb_builder(usb_driver);
 
     static BRIGHTNESS_HANDLER: StaticCell<BrightnessHandler> = StaticCell::new();

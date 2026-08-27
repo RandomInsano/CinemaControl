@@ -8,18 +8,10 @@
 
 use defmt::info;
 use embassy_time::{Duration, Timer};
-use mcu_hal::i2c::{self, I2c};
-use mcu_hal::mode::Async;
-use mcu_hal::{Peri, bind_interrupts};
+use embedded_hal_async::i2c::I2c as _;
+use mcu_hal::i2c::{self, Async, I2c};
 
-use crate::board::{SmbusDmaRx, SmbusDmaTx, SmbusPeripheral, SmbusSclPin, SmbusSdaPin};
-
-bind_interrupts!(struct Irqs {
-    I2C1_EV => i2c::EventInterruptHandler<SmbusPeripheral>;
-    I2C1_ER => i2c::ErrorInterruptHandler<SmbusPeripheral>;
-    DMA1_CHANNEL6 => mcu_hal::dma::InterruptHandler<SmbusDmaTx>;
-    DMA1_CHANNEL7 => mcu_hal::dma::InterruptHandler<SmbusDmaRx>;
-});
+use crate::board::{Irqs, SmbusPeripheral, SmbusResources};
 
 /// Standard PMBus command codes to probe on any address that ACKs, so we can
 /// map the PA-2311-02A's (undocumented) register set from real bus captures.
@@ -44,20 +36,14 @@ const PMBUS_PROBE_COMMANDS: &[(&str, u8)] = &[
     ("MFR_REVISION", 0x9B),
 ];
 
-type Bus = I2c<'static, Async, i2c::Master>;
+type Bus = I2c<'static, SmbusPeripheral, Async>;
 
-/// Sets up I2C1 for the SMBus diagnostic scanner, ready to be spawned via
+/// Sets up I2C0 for the SMBus diagnostic scanner, ready to be spawned via
 /// [`scan_task`].
-pub fn init(
-    i2c1: Peri<'static, SmbusPeripheral>,
-    scl: Peri<'static, SmbusSclPin>,
-    sda: Peri<'static, SmbusSdaPin>,
-    dma_tx: Peri<'static, SmbusDmaTx>,
-    dma_rx: Peri<'static, SmbusDmaRx>,
-) -> Bus {
+pub fn init(resources: SmbusResources) -> Bus {
     let mut config = i2c::Config::default();
-    config.frequency = mcu_hal::time::khz(100);
-    I2c::new(i2c1, scl, sda, dma_tx, dma_rx, Irqs, config)
+    config.frequency = 100_000;
+    I2c::new_async(resources.i2c, resources.scl, resources.sda, Irqs, config)
 }
 
 #[embassy_executor::task]

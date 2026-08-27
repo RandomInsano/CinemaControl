@@ -13,12 +13,26 @@ requirement, a constraint that isn't visible in the code itself).
 ## Structure
 
 Each peripheral subsystem is its own module (`src/hid.rs`, `src/pwm.rs`,
-`src/smbus.rs`, `src/storage.rs`), each owning its own `bind_interrupts!`
-block (where relevant), an `init()`
-that takes raw `Peri<'static, ...>` peripherals and returns whatever's ready
-to spawn, and its `#[embassy_executor::task]` function(s). `src/main.rs` is
-orchestration only: clock config, calling each module's `init()`, spawning
-tasks. Keep it that way — don't add peripheral setup directly in `main()`.
+`src/smbus.rs`, `src/storage.rs`), each with an `init()` that takes
+whatever `src/board.rs` gives it for that peripheral and returns whatever's
+ready to spawn, plus its `#[embassy_executor::task]` function(s). Where a
+peripheral needs more than one `Peri` (a slice + pin, an I2C instance + two
+pins, flash + its DMA channel), `board.rs` groups them into a resource
+struct (`BacklightResources`, `SmbusResources`, `FlashResources`) and
+`init()` takes that struct as its one argument — USB is simple enough to
+stay a bare `Peri<'static, UsbPeripheral>`. This means adding or dropping a
+pin for some peripheral means editing its resource struct in `board.rs`, not
+every call site's parameter list. `board::split()` owns calling
+`mcu_hal::init(clock_config())` and handing out the result as a `Board`, so
+`src/main.rs` is pure orchestration: `board::split()`, calling each module's
+`init()`, spawning tasks. Keep it that way — don't add peripheral setup
+directly in `main()`, and don't reach into `mcu_hal::Peripherals` fields
+outside `board::split()`.
+
+All interrupt vectors are bound in one place — `board::Irqs` — rather than
+per-module, since the PAC-defined vector names (`USBCTRL_IRQ`, `I2C0_IRQ`,
+...) are exactly the kind of chip-specific identifier `board.rs` exists to
+contain; each module just imports `crate::board::Irqs`.
 
 Keep functions small and single-purpose; prefer several small named
 functions over one that mixes concerns (see how `hid::init` delegates to
@@ -37,20 +51,19 @@ aren't about the peripheral itself.
 
 ## Build
 
-`cargo build --release` targets `thumbv7m-none-eabi` (Blue Pill /
-STM32F103C8). Build artifacts land in `~/Downloads/CargoBuild`, not
+`cargo build --release` targets `thumbv6m-none-eabi` (Raspberry Pi Pico /
+RP2040). Build artifacts land in `~/Downloads/CargoBuild`, not
 `./target` — that's the user's global `~/.cargo/config.toml`, not something
 to override.
 
 ## Storage
 
-This chip (STM32F103C8) has no hardware EEPROM — confirmed via the embassy
-build output, which never sets its `eeprom` cfg for this chip — so brightness
-persistence uses program flash instead, via the `sequential-storage` crate
+Brightness persistence uses program flash via the `sequential-storage` crate
 (`src/storage.rs`), not hand-rolled wear-leveling. It needs the last two
-flash pages reserved in `memory.x`. Its API is async-only and embassy-stm32
-has no async flash driver for F1, so the blocking `Flash` is wrapped in
-`embassy_embedded_hal::adapter::BlockingAsync`.
+flash erase sectors reserved in `memory.x`. Unlike the STM32F103C8 this
+project previously targeted, `embassy-rp`'s async `Flash` implements
+`embedded-storage-async` directly (given a DMA channel + `Async` mode), so no
+blocking-to-async adapter is needed.
 
 ## SMBus / PA-2311-02A
 
@@ -67,3 +80,7 @@ uses HID Power Device Usage 0x05 "PowerSupply", not 0x04 "UPS" — this is
 telemetry from an internal PSU, not a battery-backup device, and tagging it
 UPS could make a host treat it like one (e.g. offer battery-loss shutdown
 behavior).
+
+## Research
+
+When trying to investigate how a particlar crate works, use `cargo add` and build the documentation with `cargo build` to use a local version of the documentation instead of fetching from the web.

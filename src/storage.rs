@@ -1,41 +1,41 @@
-//! Persists brightness across power cycles in the last two flash pages
-//! (reserved for this in `memory.x`), debounced so dragging a brightness
-//! slider doesn't wear out the flash.
+//! Persists brightness across power cycles in the last two flash erase
+//! sectors (reserved for this in `memory.x`), debounced so dragging a
+//! brightness slider doesn't wear out the flash.
 //!
 //! Storage itself — wear-leveling, power-fail safety, CRC-checked items —
 //! is handled by the `sequential-storage` crate rather than hand-rolled
-//! here. It only speaks `embedded-storage-async`, and embassy-stm32 has no
-//! async flash driver for this chip, so the blocking `Flash` is wrapped in
-//! `embassy_embedded_hal`'s `BlockingAsync` adapter.
+//! here. Unlike the STM32F1 (Blue Pill) case, `embassy-rp`'s async `Flash`
+//! implements `embedded-storage-async` directly, so no blocking-to-async
+//! adapter is needed.
 
 use core::ops::Range;
 
 use defmt::warn;
-use embassy_embedded_hal::adapter::BlockingAsync;
-use embassy_time::{Duration, Timer};
-use mcu_hal::Peri;
-use mcu_hal::flash::{Blocking, Flash};
+use mcu_hal::flash::{Async, Flash};
 use sequential_storage::cache::{Cache, Uncached};
 use sequential_storage::map::{MapConfig, MapStorage};
 
-use crate::board::FlashPeripheral;
+use crate::board::{FlashPeripheral, FlashResources, Irqs};
 use crate::hid;
 
-/// Last two 1 KiB pages of the 64 KiB part; `memory.x` reserves them by
-/// ending the linker's `FLASH` region at 62K.
-const FLASH_RANGE: Range<u32> = 62 * 1024..64 * 1024;
+/// Total size of the Pico's onboard QSPI flash.
+const FLASH_SIZE: usize = 2 * 1024 * 1024;
 
-const DEBOUNCE: Duration = Duration::from_secs(30);
+/// Last two 4 KiB erase sectors; `memory.x` reserves them by ending the
+/// linker's `FLASH` region 8K early.
+const FLASH_RANGE: Range<u32> = (FLASH_SIZE as u32 - 8 * 1024)..FLASH_SIZE as u32;
+
+const DEBOUNCE: embassy_time::Duration = embassy_time::Duration::from_secs(30);
 
 type Store = MapStorage<
     (),
-    BlockingAsync<Flash<'static, Blocking>>,
+    Flash<'static, FlashPeripheral, Async, FLASH_SIZE>,
     Cache<Uncached, Uncached, Uncached, ()>,
 >;
 
-pub fn init(flash: Peri<'static, FlashPeripheral>) -> Store {
+pub fn init(resources: FlashResources) -> Store {
     MapStorage::new(
-        BlockingAsync::new(Flash::new_blocking(flash)),
+        Flash::new(resources.flash, resources.dma, Irqs),
         const { MapConfig::new(FLASH_RANGE) },
         Cache::new_uncached(),
     )
@@ -62,7 +62,7 @@ pub async fn task(mut store: Store) -> ! {
 
         // Debounce window: absorb further changes, then write once more at
         // the end if the value moved again during it.
-        Timer::after(DEBOUNCE).await;
+        embassy_time::Timer::after(DEBOUNCE).await;
         if let Some(v) = hid::BRIGHTNESS_CHANGED.try_take()
             && v != saved
         {
