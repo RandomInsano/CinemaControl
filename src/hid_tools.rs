@@ -1,23 +1,21 @@
 //! Small helpers for building HID report byte buffers.
 
-use core::sync::atomic::{AtomicI16, AtomicU16, Ordering};
-
-/// An atomic that can read itself out as little-endian bytes, so report
-/// fields can be written as `.load_le_bytes()` instead of spelling out
-/// `.load(Ordering::Relaxed).to_le_bytes()` at every call site.
-pub trait LoadLeBytes<const N: usize> {
-    fn load_le_bytes(&self) -> [u8; N];
+/// A value that can serialize itself as little-endian bytes for a HID report
+/// field, so report fields can be written as `.field(value)` instead of
+/// spelling out `.to_le_bytes()` at every call site.
+pub trait ToLeBytes<const N: usize> {
+    fn to_le_bytes(self) -> [u8; N];
 }
 
-impl LoadLeBytes<2> for AtomicU16 {
-    fn load_le_bytes(&self) -> [u8; 2] {
-        self.load(Ordering::Relaxed).to_le_bytes()
+impl ToLeBytes<2> for u16 {
+    fn to_le_bytes(self) -> [u8; 2] {
+        u16::to_le_bytes(self)
     }
 }
 
-impl LoadLeBytes<2> for AtomicI16 {
-    fn load_le_bytes(&self) -> [u8; 2] {
-        self.load(Ordering::Relaxed).to_le_bytes()
+impl ToLeBytes<2> for i16 {
+    fn to_le_bytes(self) -> [u8; 2] {
+        i16::to_le_bytes(self)
     }
 }
 
@@ -35,8 +33,8 @@ impl<'a> Report<'a> {
         Self { buf, len: 0 }
     }
 
-    pub fn field<T: LoadLeBytes<N>, const N: usize>(&mut self, value: &T) -> &mut Self {
-        let bytes = value.load_le_bytes();
+    pub fn field<T: ToLeBytes<N>, const N: usize>(&mut self, value: T) -> &mut Self {
+        let bytes = value.to_le_bytes();
         self.buf[self.len..self.len + N].copy_from_slice(&bytes);
         self.len += N;
         self

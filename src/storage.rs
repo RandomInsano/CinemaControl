@@ -47,15 +47,13 @@ pub async fn load(store: &mut Store) -> Option<u16> {
 
 #[embassy_executor::task]
 pub async fn task(mut store: Store) -> ! {
+    let mut brightness = hid::BRIGHTNESS.receiver().unwrap();
     loop {
-        // Leading edge: write as soon as the value changes.
-        let saved = hid::BRIGHTNESS_CHANGED.wait().await;
+        let saved = brightness.changed().await;
         save(&mut store, saved).await;
 
-        // Debounce window: absorb further changes, then write once more at
-        // the end if the value moved again during it.
         embassy_time::Timer::after(DEBOUNCE).await;
-        if let Some(v) = hid::BRIGHTNESS_CHANGED.try_take()
+        if let Some(v) = brightness.try_changed()
             && v != saved
         {
             save(&mut store, v).await;
@@ -63,7 +61,13 @@ pub async fn task(mut store: Store) -> ! {
     }
 }
 
+/// Writes `value` to flash, unless it already matches what's stored — so
+/// repeated writes of an unchanged brightness don't wear the flash.
 async fn save(store: &mut Store, value: u16) {
+    if load(store).await == Some(value) {
+        return;
+    }
+
     let mut buf = [0u8; 32];
     if let Err(e) = store.store_item(&mut buf, &(), &value).await {
         warn!("brightness flash write failed: {:?}", e);

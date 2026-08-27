@@ -7,10 +7,33 @@
 //! issued to the PSU.
 
 use defmt::info;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::watch::Watch;
 use embassy_time::{Duration, Timer};
 use embedded_hal_async::i2c::I2c as _;
 
 use crate::board::SmbusBus;
+
+/// Bundled PA-2311-02A telemetry: voltage (mV), current (mA), and
+/// temperature (tenths of a degree C). All zero until [`scan_task`] actually
+/// decodes a real PMBus reply (see the module doc comment) instead of
+/// [`send_dummy_telemetry`].
+#[derive(Clone, Copy)]
+pub struct PsuTelemetry {
+    pub voltage_mv: u16,
+    pub current_ma: u16,
+    pub temperature_decic: i16,
+}
+
+/// Value plus change notification in one watch, so `hid::psu_report_task`
+/// can push a HID Input report only when this actually changes instead of
+/// polling on a timer. One receiver, for that task.
+pub static PSU_TELEMETRY: Watch<CriticalSectionRawMutex, PsuTelemetry, 1> =
+    Watch::new_with(PsuTelemetry {
+        voltage_mv: 0,
+        current_ma: 0,
+        temperature_decic: 0,
+    });
 
 /// Standard PMBus command codes to probe on any address that ACKs, so we can
 /// map the PA-2311-02A's (undocumented) register set from real bus captures.
@@ -40,10 +63,29 @@ pub async fn scan_task(mut i2c: SmbusBus) -> ! {
     // Give the PSU time to power up / the bus to settle after board reset.
     Timer::after(Duration::from_secs(2)).await;
 
+    let mut dummy_cycle: u16 = 0;
     loop {
         scan_bus(&mut i2c).await;
+
+        // The register map isn't decoded yet (see the module doc comment),
+        // so there's nothing real to feed `PSU_TELEMETRY` from. Push a
+        // slowly-varying made-up reading instead, purely so `psu_report_task`
+        // has actual changes to exercise its change-only reporting with.
+        send_dummy_telemetry(dummy_cycle);
+        dummy_cycle = dummy_cycle.wrapping_add(1);
+
         Timer::after(Duration::from_secs(30)).await;
     }
+}
+
+/// See the call site in [`scan_task`]: not a PSU reading, just a value that
+/// moves a little every cycle.
+fn send_dummy_telemetry(cycle: u16) {
+    PSU_TELEMETRY.sender().send(PsuTelemetry {
+        voltage_mv: 12_000 + (cycle % 50) * 4,
+        current_ma: 1_500 + (cycle % 30) * 10,
+        temperature_decic: 350 + (cycle % 20) as i16 * 5,
+    });
 }
 
 /// Runs one full pass over every 7-bit address, logging whatever is found.

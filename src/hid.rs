@@ -1,12 +1,9 @@
 //! USB HID: VESA/USB Monitor Control Class brightness control, plus a
 //! placeholder HID Power Device (PSU telemetry) interface.
 
-use core::sync::atomic::{AtomicI16, AtomicU16, Ordering};
-
 use defmt::warn;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
-use embassy_time::Timer;
+use embassy_sync::watch::Watch;
 use embassy_usb::class::hid::{
     Config as HidConfig, HidBootProtocol, HidSubclass, HidWriter, ReportId, RequestHandler,
     State as HidState,
@@ -16,28 +13,28 @@ use embassy_usb::{Builder, Config as UsbConfig, UsbDevice};
 use static_cell::StaticCell;
 
 use crate::board::UsbDriver;
-use crate::hid_tools::{LoadLeBytes, Report};
+use crate::hid_tools::Report;
+use crate::smbus::PSU_TELEMETRY;
 
-/// Current backlight brightness, 0..=1023. Source of truth for both the HID
-/// Feature/Input report and the PWM duty cycle.
-pub static BRIGHTNESS: AtomicU16 = AtomicU16::new(512);
-/// Wakes the PWM task whenever the host writes a new brightness value.
-pub static BRIGHTNESS_CHANGED: Signal<CriticalSectionRawMutex, u16> = Signal::new();
+/// Current backlight brightness, 0..=1023: both the value (readable
+/// synchronously via `try_get`) and the change notification (awaitable via a
+/// receiver's `changed`) for the HID Feature/Input report and the PWM duty
+/// cycle. Three receivers: the PWM task, the storage task, and the HID Input
+/// report task.
+pub static BRIGHTNESS: Watch<CriticalSectionRawMutex, u16, 3> = Watch::new_with(512);
 
 pub const MAX_BRIGHTNESS: u16 = 1023;
 
-/// Sets the startup brightness restored from flash, without signaling
-/// [`BRIGHTNESS_CHANGED`] (so it isn't immediately saved straight back).
+/// Sets the startup brightness restored from flash, same as any other
+/// [`BRIGHTNESS`] update: every receiver's first `changed` fires with this
+/// value. `pwm.rs` and [`hid_report_task`] just reapply it, harmlessly.
+/// `storage.rs` is the one consumer where re-saving it immediately would
+/// matter, but its `save` already no-ops when the value matches what's on
+/// flash — which this always does, since it's the value `storage.rs` itself
+/// just loaded — so no special-casing is needed there either.
 pub fn restore_brightness(value: u16) {
-    BRIGHTNESS.store(value.min(MAX_BRIGHTNESS), Ordering::Relaxed);
+    BRIGHTNESS.sender().send(value.min(MAX_BRIGHTNESS));
 }
-
-/// Placeholder PA-2311-02A telemetry, exposed over HID so the wire format
-/// exists before we know how to actually read it (see `src/smbus.rs`). All
-/// zero until something populates them from a real PMBus read.
-pub static PSU_VOLTAGE_MV: AtomicU16 = AtomicU16::new(0);
-pub static PSU_CURRENT_MA: AtomicU16 = AtomicU16::new(0);
-pub static PSU_TEMPERATURE_DECIC: AtomicI16 = AtomicI16::new(0);
 
 /// VESA/USB Monitor Control Class HID report descriptor: a single Monitor
 /// Control application collection (Usage Page 0x80, Usage 0x01) containing a
@@ -104,7 +101,7 @@ impl RequestHandler for BrightnessHandler {
         match id {
             ReportId::Feature(_) | ReportId::In(_) => {
                 let mut report = Report::new(buf);
-                report.field(&BRIGHTNESS);
+                report.field(BRIGHTNESS.try_get().unwrap());
                 Some(report.len())
             }
             _ => None,
@@ -115,8 +112,7 @@ impl RequestHandler for BrightnessHandler {
         match id {
             ReportId::Feature(_) if data.len() >= 2 => {
                 let v = u16::from_le_bytes([data[0], data[1]]).min(MAX_BRIGHTNESS);
-                BRIGHTNESS.store(v, Ordering::Relaxed);
-                BRIGHTNESS_CHANGED.signal(v);
+                BRIGHTNESS.sender().send(v);
                 defmt::info!("brightness set to {}", v);
                 OutResponse::Accepted
             }
@@ -134,11 +130,12 @@ impl RequestHandler for PsuHandler {
     fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
         match id {
             ReportId::Feature(_) | ReportId::In(_) => {
+                let telemetry = PSU_TELEMETRY.try_get().unwrap();
                 let mut report = Report::new(buf);
                 report
-                    .field(&PSU_VOLTAGE_MV)
-                    .field(&PSU_CURRENT_MA)
-                    .field(&PSU_TEMPERATURE_DECIC);
+                    .field(telemetry.voltage_mv)
+                    .field(telemetry.current_ma)
+                    .field(telemetry.temperature_decic);
                 Some(report.len())
             }
             _ => None,
@@ -247,26 +244,34 @@ pub async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) -> ! {
 #[embassy_executor::task]
 pub async fn hid_report_task(mut writer: HidWriter<'static, UsbDriver, 2>) -> ! {
     writer.ready().await;
+    let mut brightness = BRIGHTNESS.receiver().unwrap();
+    let mut value = brightness.try_get().unwrap();
+
     loop {
-        if let Err(e) = writer.write(&BRIGHTNESS.load_le_bytes()).await {
+        if let Err(e) = writer.write(&value.to_le_bytes()).await {
             warn!("hid input report write failed: {:?}", e);
         }
-        Timer::after_millis(200).await;
+        value = brightness.changed().await;
     }
 }
 
 #[embassy_executor::task]
 pub async fn psu_report_task(mut writer: HidWriter<'static, UsbDriver, 6>) -> ! {
     writer.ready().await;
+    let mut telemetry = PSU_TELEMETRY.receiver().unwrap();
+    let mut value = telemetry.try_get().unwrap();
+
     loop {
         let mut report_buf = [0u8; 6];
         Report::new(&mut report_buf)
-            .field(&PSU_VOLTAGE_MV)
-            .field(&PSU_CURRENT_MA)
-            .field(&PSU_TEMPERATURE_DECIC);
+            .field(value.voltage_mv)
+            .field(value.current_ma)
+            .field(value.temperature_decic);
+
         if let Err(e) = writer.write(&report_buf).await {
             warn!("psu input report write failed: {:?}", e);
         }
-        Timer::after_millis(1000).await;
+
+        value = telemetry.changed().await;
     }
 }

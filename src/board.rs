@@ -44,7 +44,6 @@ const SMBUS_FREQUENCY_HZ: u32 = 100_000;
 
 type FlashPeripheral = peripherals::FLASH;
 type FlashDma = peripherals::DMA_CH0;
-/// Total size of the Pico's onboard QSPI flash.
 pub const FLASH_SIZE: usize = 2 * 1024 * 1024;
 pub type BoardFlash = Flash<'static, FlashPeripheral, flash::Async, FLASH_SIZE>;
 
