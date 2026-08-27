@@ -18,7 +18,7 @@ use crate::board::SmbusBus;
 /// temperature (tenths of a degree C). All zero until [`scan_task`] actually
 /// decodes a real PMBus reply (see the module doc comment) instead of
 /// [`send_dummy_telemetry`].
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct PsuTelemetry {
     pub voltage_mv: u16,
     pub current_ma: u16,

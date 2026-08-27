@@ -1,24 +1,21 @@
-[package]
-name = "CinemaControl"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "2"
+members = ["firmware", "cinectl"]
+# `firmware` is `no_std`/`no_main` and only builds for `thumbv6m-none-eabi`
+# (pinned in `firmware/.cargo/config.toml`), which only applies when cargo is
+# invoked with `firmware/` as the working directory — cargo config discovery
+# doesn't follow `-p`/`--workspace` across member directories. So a bare
+# `cargo build`/`check`/`run` from the repo root defaults to `cinectl` (the
+# host tool) instead of trying and failing to cross-build firmware. Always
+# `cd firmware` for firmware commands; see `AGENTS.md`.
+default-members = ["cinectl"]
 
-[dependencies]
-cortex-m = "0.7.9"
-cortex-m-rt = "0.7.6"
-defmt = "1.1.1"
-defmt-rtt = "1.3.0"
-embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "defmt"] }
-mcu-hal = { package = "embassy-rp", version = "0.10.0", features = ["rp2040", "time-driver", "critical-section-impl", "defmt"] }
-embassy-sync = { version = "0.8.0", features = ["defmt"] }
-embassy-time = { version = "0.5.1", features = ["defmt"] }
-embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt", "max-handler-count-2", "max-interface-count-2"] }
-embedded-hal-async = "1.0.0"
-panic-probe = { version = "1.0.0", features = ["print-defmt"] }
-portable-atomic = { version = "1.15", features = ["critical-section"] }
-sequential-storage = { version = "8.0.1", features = ["defmt"] }
-static_cell = "2.1.1"
-
+# Cargo ignores [profile.*] in member manifests — these must live at the
+# workspace root, and apply to every member. `firmware` needs the aggressive
+# size/panic settings (flash is tight, and `no_std` requires panic="abort"
+# regardless); `cinectl` gets its own opt-level override below since it has
+# no flash budget to optimize for. `panic`/`lto` can't be overridden
+# per-package, but "abort" and LTO are both fine for a small CLI tool too.
 [profile.release]
 opt-level = "z"
 lto = true
@@ -28,3 +25,6 @@ panic = "abort"
 
 [profile.dev]
 panic = "abort"
+
+[profile.release.package.cinectl]
+opt-level = 3
