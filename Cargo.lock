@@ -10,6 +10,7 @@ dependencies = [
  "cortex-m-rt",
  "defmt",
  "defmt-rtt",
+ "embassy-embedded-hal",
  "embassy-executor",
  "embassy-rp",
  "embassy-sync",
@@ -763,6 +764,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1763775e2323b7d5f0aa6090657f5e21cfa02ede71f5dc40eead06d64dcd15cc"
 dependencies = [
  "embedded-storage",
+]
+
+[[package]]
+name = "emc1403"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "embedded-hal-async",
 ]
 
 [[package]]

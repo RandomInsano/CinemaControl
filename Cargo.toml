@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["firmware", "cinectl"]
+members = ["firmware", "cinectl", "emc1403"]
 # `firmware` is `no_std`/`no_main` and only builds for `thumbv6m-none-eabi`
 # (pinned in `firmware/.cargo/config.toml`), which only applies when cargo is
 # invoked with `firmware/` as the working directory — cargo config discovery
@@ -8,7 +8,11 @@ members = ["firmware", "cinectl"]
 # `cargo build`/`check`/`run` from the repo root defaults to `cinectl` (the
 # host tool) instead of trying and failing to cross-build firmware. Always
 # `cd firmware` for firmware commands; see `AGENTS.md`.
-default-members = ["cinectl"]
+#
+# `emc1403` is a standalone, host-buildable `no_std` driver crate — not a
+# `firmware` dependency yet (see its own doc comments) — so it's a plain
+# default member alongside `cinectl`.
+default-members = ["cinectl", "emc1403"]
 
 # Cargo ignores [profile.*] in member manifests — these must live at the
 # workspace root, and apply to every member. `firmware` needs the aggressive

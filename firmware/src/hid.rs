@@ -228,7 +228,7 @@ fn usb_builder(usb_driver: UsbDriver, unique_id: &'static str) -> Builder<'stati
     static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
     static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
     static MSOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
-    static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+    static CONTROL_BUF: StaticCell<[u8; 256]> = StaticCell::new();
 
     Builder::new(
         usb_driver,
@@ -236,7 +236,7 @@ fn usb_builder(usb_driver: UsbDriver, unique_id: &'static str) -> Builder<'stati
         CONFIG_DESC.init([0; 256]),
         BOS_DESC.init([0; 256]),
         MSOS_DESC.init([0; 256]),
-        CONTROL_BUF.init([0; 64]),
+        CONTROL_BUF.init([0; 256]),
     )
 }
 
