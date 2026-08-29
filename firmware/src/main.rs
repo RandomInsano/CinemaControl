@@ -5,6 +5,7 @@ mod board;
 mod hid;
 mod hid_tools;
 mod pwm;
+mod shared_i2c;
 mod smbus;
 mod storage;
 
@@ -31,14 +32,16 @@ async fn main(spawner: Spawner) -> ! {
     let usb = hid::init(p.usb, p.unique_id);
     spawner.spawn(hid::usb_task(usb.usb).unwrap());
     spawner.spawn(hid::hid_report_task(usb.brightness_writer).unwrap());
-    spawner.spawn(hid::psu_report_task(usb.psu_writer).unwrap());
+    spawner.spawn(hid::power_report_task(usb.power_writer).unwrap());
+    spawner.spawn(hid::thermal_report_task(usb.thermal_writer).unwrap());
 
     // --- Backlight PWM ---
     let backlight = pwm::init(p.backlight);
     spawner.spawn(pwm::task(backlight).unwrap());
 
     // --- SMBus telemetry for the PA-2311-02A PSU ---
-    spawner.spawn(smbus::telemetry_task(p.smbus).unwrap());
+    spawner.spawn(smbus::ina219_task(p.smbus).unwrap());
+    spawner.spawn(smbus::emc1403_task(p.smbus).unwrap());
 
     core::future::pending::<()>().await;
     unreachable!()

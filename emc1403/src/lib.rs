@@ -97,6 +97,25 @@ impl ConversionRate {
             Self::PerSec64 => 0xA,
         }
     }
+
+    /// Time between conversions at this rate, in microseconds — the plain
+    /// reciprocal of the variant name (`PerSec4` -> 4 conversions/sec ->
+    /// 250,000us between them), not a separate datasheet-measured figure.
+    pub const fn period_us(self) -> u32 {
+        match self {
+            Self::PerSec1_16 => 16_000_000,
+            Self::PerSec1_8 => 8_000_000,
+            Self::PerSec1_4 => 4_000_000,
+            Self::PerSec1_2 => 2_000_000,
+            Self::PerSec1 => 1_000_000,
+            Self::PerSec2 => 500_000,
+            Self::PerSec4 => 250_000,
+            Self::PerSec8 => 125_000,
+            Self::PerSec16 => 62_500,
+            Self::PerSec32 => 31_250,
+            Self::PerSec64 => 15_625,
+        }
+    }
 }
 
 /// CALRT[2:0]/CTHRM[2:0] fields of the Consecutive ALERT register (0x22)
@@ -480,6 +499,14 @@ mod tests {
     #[test]
     fn undefined_conversion_rate_falls_back_to_1_per_sec() {
         assert_eq!(ConversionRate::from_raw(0xF), ConversionRate::PerSec1);
+    }
+
+    #[test]
+    fn period_matches_named_rate() {
+        assert_eq!(ConversionRate::PerSec1.period_us(), 1_000_000);
+        assert_eq!(ConversionRate::PerSec4.period_us(), 250_000);
+        assert_eq!(ConversionRate::PerSec1_16.period_us(), 16_000_000);
+        assert_eq!(ConversionRate::PerSec64.period_us(), 15_625);
     }
 
     #[test]

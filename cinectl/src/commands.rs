@@ -6,8 +6,9 @@ use hidapi::{HidApi, HidDevice};
 
 use crate::device::Board;
 use crate::report::{
-    self, BRIGHTNESS_FEATURE_REPORT_LEN, BRIGHTNESS_INPUT_REPORT_LEN, PSU_FEATURE_REPORT_LEN,
-    PSU_INPUT_REPORT_LEN, PsuTelemetry,
+    self, BRIGHTNESS_FEATURE_REPORT_LEN, BRIGHTNESS_INPUT_REPORT_LEN, POWER_FEATURE_REPORT_LEN,
+    POWER_INPUT_REPORT_LEN, PowerTelemetry, THERMAL_FEATURE_REPORT_LEN, THERMAL_INPUT_REPORT_LEN,
+    ThermalTelemetry,
 };
 
 pub fn list(boards: &[Board]) -> Result<()> {
@@ -45,24 +46,38 @@ pub fn set_brightness(api: &HidApi, board: &Board, value: u16) -> Result<()> {
 }
 
 pub fn get_psu(api: &HidApi, board: &Board) -> Result<()> {
-    let device = open(api, &board.psu_path)?;
-    let mut buf = [0u8; PSU_FEATURE_REPORT_LEN];
-    device
-        .get_feature_report(&mut buf)
-        .context("reading PSU feature report")?;
-    let telemetry = PsuTelemetry::from_bytes(buf[1..].try_into().unwrap());
-    println!("{telemetry}");
+    let power_device = open(api, &board.power_path)?;
+    let mut power_buf = [0u8; POWER_FEATURE_REPORT_LEN];
+    power_device
+        .get_feature_report(&mut power_buf)
+        .context("reading power feature report")?;
+    let power = PowerTelemetry::from_bytes(power_buf[1..].try_into().unwrap());
+
+    let thermal_device = open(api, &board.thermal_path)?;
+    let mut thermal_buf = [0u8; THERMAL_FEATURE_REPORT_LEN];
+    thermal_device
+        .get_feature_report(&mut thermal_buf)
+        .context("reading thermal feature report")?;
+    let thermal = ThermalTelemetry::from_bytes(thermal_buf[1..].try_into().unwrap());
+
+    println!("{power}  {thermal}");
     Ok(())
 }
 
-/// Streams brightness and PSU Input reports as they arrive — one blocking
-/// reader thread per HID interface, since the firmware only pushes a report
-/// when a value actually changes (see `firmware/src/hid.rs`), so a plain
-/// blocking `read` per thread is already exactly "watch for changes", no
-/// polling loop needed. Runs until interrupted (Ctrl-C).
+/// Streams brightness, power, and thermal Input reports as they arrive —
+/// one blocking reader thread per HID interface, since the firmware only
+/// pushes a report when a value actually changes (see
+/// `firmware/src/hid.rs`/`firmware/src/smbus.rs`), so a plain blocking
+/// `read` per thread is already exactly "watch for changes", no polling
+/// loop needed. Power and thermal are separate interfaces updating at very
+/// different rates (see `firmware/src/hid.rs`'s module doc comment), so
+/// each is reported on its own line the moment it changes, rather than
+/// merged into one combined line that would also reprint whichever field
+/// *didn't* just change. Runs until interrupted (Ctrl-C).
 pub fn watch(api: &HidApi, board: &Board) -> Result<()> {
     let brightness_device = open(api, &board.brightness_path)?;
-    let psu_device = open(api, &board.psu_path)?;
+    let power_device = open(api, &board.power_path)?;
+    let thermal_device = open(api, &board.thermal_path)?;
 
     let (tx, rx) = mpsc::channel::<String>();
 
@@ -77,9 +92,13 @@ pub fn watch(api: &HidApi, board: &Board) -> Result<()> {
             )
         },
     );
-    spawn_reader(psu_device, tx, PSU_INPUT_REPORT_LEN, |bytes| {
-        let telemetry = PsuTelemetry::from_bytes(bytes.try_into().unwrap());
-        format!("psu: {telemetry}")
+    spawn_reader(power_device, tx.clone(), POWER_INPUT_REPORT_LEN, |bytes| {
+        let power = PowerTelemetry::from_bytes(bytes.try_into().unwrap());
+        format!("power: {power}")
+    });
+    spawn_reader(thermal_device, tx, THERMAL_INPUT_REPORT_LEN, |bytes| {
+        let thermal = ThermalTelemetry::from_bytes(bytes.try_into().unwrap());
+        format!("thermal: {thermal}")
     });
 
     for line in rx {

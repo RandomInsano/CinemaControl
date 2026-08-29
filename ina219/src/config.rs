@@ -112,6 +112,29 @@ impl AdcSetting {
             Self::Average128 => 0b1111,
         }
     }
+
+    /// Conversion time for one ADC set to this resolution/averaging,
+    /// datasheet S4.1 — the `Average*` variants are always 12-bit per
+    /// sample, so a higher sample count means a longer conversion, not
+    /// finer per-sample resolution. This is for *one* ADC (BADC or SADC)
+    /// alone; a MODE that converts both every cycle (shunt-and-bus,
+    /// triggered or continuous) takes roughly the sum of both, not the max
+    /// of either alone (datasheet S4.1).
+    pub const fn conversion_time_us(self) -> u32 {
+        match self {
+            Self::Bits9 => 84,
+            Self::Bits10 => 148,
+            Self::Bits11 => 276,
+            Self::Bits12 => 532,
+            Self::Average2 => 1_060,
+            Self::Average4 => 2_130,
+            Self::Average8 => 4_260,
+            Self::Average16 => 8_510,
+            Self::Average32 => 17_020,
+            Self::Average64 => 34_050,
+            Self::Average128 => 68_100,
+        }
+    }
 }
 
 /// MODE\[2:0\], bits 2:0.
@@ -238,6 +261,28 @@ mod tests {
         for raw in [0b0100u16, 0b0101, 0b0110, 0b0111, 0b1000] {
             assert_eq!(AdcSetting::from_raw(raw), AdcSetting::Bits12);
         }
+    }
+
+    #[test]
+    fn conversion_time_matches_datasheet_extremes() {
+        assert_eq!(AdcSetting::Bits9.conversion_time_us(), 84);
+        assert_eq!(AdcSetting::Bits12.conversion_time_us(), 532);
+        assert_eq!(AdcSetting::Average128.conversion_time_us(), 68_100);
+    }
+
+    #[test]
+    fn conversion_time_increases_monotonically_with_sample_count() {
+        let times = [
+            AdcSetting::Average2,
+            AdcSetting::Average4,
+            AdcSetting::Average8,
+            AdcSetting::Average16,
+            AdcSetting::Average32,
+            AdcSetting::Average64,
+            AdcSetting::Average128,
+        ]
+        .map(AdcSetting::conversion_time_us);
+        assert!(times.is_sorted());
     }
 
     #[test]

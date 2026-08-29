@@ -27,6 +27,8 @@
 //! module has no business reading another module's runtime state, only
 //! wiring up the silicon.
 
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 use mcu_hal::flash::{self, Flash};
 use mcu_hal::i2c::{self, I2c};
 use mcu_hal::pwm::{self, Pwm};
@@ -64,10 +66,15 @@ bind_interrupts!(struct Irqs {
 /// This board's peripherals, already brought up into the driver type each
 /// module actually uses. The only place `mcu_hal::Peripherals`'s raw field
 /// names, or any driver's `new()`, appear.
+/// `smbus` is a `&'static` mutex, not the bus itself — `smbus.rs` runs two
+/// independent tasks (INA219, EMC1403) against the one physical bus, and a
+/// shared mutex lets each hold its own driver instance for its whole
+/// lifetime rather than only ever getting a short-lived exclusive borrow of
+/// a bare `SmbusBus` (see `shared_i2c.rs`).
 pub struct Board {
     pub usb: UsbDriver,
     pub backlight: Backlight,
-    pub smbus: SmbusBus,
+    pub smbus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>,
     pub flash: BoardFlash,
     pub unique_id: &'static str,
 }
@@ -79,10 +86,12 @@ pub fn split() -> Board {
     let mut raw_id = [0u8; 8];
     flash.blocking_unique_id(&mut raw_id).unwrap();
 
+    static SMBUS: StaticCell<Mutex<CriticalSectionRawMutex, SmbusBus>> = StaticCell::new();
+
     Board {
         usb: Driver::new(p.USB, Irqs),
         backlight: backlight_pwm(p.PWM_SLICE7, p.PIN_15),
-        smbus: smbus_bus(p.I2C0, p.PIN_5, p.PIN_4),
+        smbus: SMBUS.init(Mutex::new(smbus_bus(p.I2C0, p.PIN_5, p.PIN_4))),
         flash,
         unique_id: hex_encode(raw_id),
     }

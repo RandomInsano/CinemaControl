@@ -1,7 +1,11 @@
-//! USB HID: VESA/USB Monitor Control Class brightness control, plus a
-//! Power Device interface bundling PSU telemetry (voltage/current/power via
-//! the INA219, calibrated per `smbus::INA219_CALIBRATION_RAW` — temperature
-//! via the EMC1403).
+//! USB HID: VESA/USB Monitor Control Class brightness control, plus two
+//! separate Power Device interfaces for PSU telemetry — one for
+//! voltage/current/power (INA219, calibrated per
+//! `smbus::INA219_CALIBRATION_RAW`), one for temperature (EMC1403). Split
+//! into two interfaces (rather than one combined report) because the two
+//! chips update at very different rates (see `smbus.rs`'s module doc
+//! comment) — a host watching for changes on one shouldn't have to also
+//! wake up every time the other updates.
 
 use defmt::warn;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -16,7 +20,7 @@ use static_cell::StaticCell;
 
 use crate::board::UsbDriver;
 use crate::hid_tools::Report;
-use crate::smbus::PSU_TELEMETRY;
+use crate::smbus::{POWER_TELEMETRY, THERMAL_TELEMETRY};
 
 /// Current backlight brightness, 0..=1023: both the value (readable
 /// synchronously via `try_get`) and the change notification (awaitable via a
@@ -65,20 +69,14 @@ const MONITOR_REPORT_DESCRIPTOR: &[u8] = &[
 
 /// HID Power Device report descriptor (Usage Page 0x84, Usage 0x05
 /// "PowerSupply" — deliberately not 0x04 "UPS", since this isn't a
-/// battery-backup device and shouldn't be treated like one). No Report IDs:
-/// it's the only report this interface has, so Voltage + Current + Power +
-/// two Temperature channels just concatenate into one 12-byte Input and one
-/// 12-byte Feature report. Voltage (unsigned mV), Current (signed mA — the
+/// battery-backup device and shouldn't be treated like one), Voltage +
+/// Current + Power only. No Report IDs: it's the only report this interface
+/// has, so the three fields just concatenate into one 8-byte Input and one
+/// 8-byte Feature report. Voltage (unsigned mV), Current (signed mA — the
 /// INA219 is bidirectional), and Power (unsigned mW) are all real INA219
-/// reads, calibrated per `smbus::INA219_CALIBRATION_RAW`; the two
-/// Temperature fields are signed
-/// tenths of a degree C (-40.0 to 150.0) and are real EMC1403 reads. Both
-/// Temperature fields share the same usage (0x36): HID assigns repeated
-/// local usage tags to a multi-count item in declaration order, so the two
-/// tags below map to Internal Diode and External Diode 1 respectively, in
-/// the same order `smbus::PsuTelemetry`/[`psu_report_task`] write them in.
+/// reads, calibrated per `smbus::INA219_CALIBRATION_RAW`.
 #[rustfmt::skip]
-const PSU_REPORT_DESCRIPTOR: &[u8] = &[
+const POWER_REPORT_DESCRIPTOR: &[u8] = &[
     0x05, 0x84,       // Usage Page (Power Device)
     0x09, 0x05,       // Usage (PowerSupply)
     0xA1, 0x01,       // Collection (Application)
@@ -106,6 +104,27 @@ const PSU_REPORT_DESCRIPTOR: &[u8] = &[
     0x81, 0x02,                   //   Input (Data,Var,Abs)
     0x09, 0x34,                   //   Usage (ActivePower)
     0xB1, 0x02,                   //   Feature (Data,Var,Abs)
+
+    0xC0,             // End Collection
+];
+
+/// HID Power Device report descriptor, Temperature only — same Usage Page/
+/// top-level Usage as [`POWER_REPORT_DESCRIPTOR`] (there's no dedicated
+/// "temperature sensor" application usage on this page, and HID doesn't
+/// require distinct interfaces to have distinct top-level usages); `cinectl`
+/// tells the two interfaces apart by USB interface number instead (see
+/// `cinectl/src/device.rs`). No Report IDs: the two Temperature fields
+/// concatenate into one 4-byte Input and one 4-byte Feature report, signed
+/// tenths of a degree C (-40.0 to 150.0), real EMC1403 reads. Both fields
+/// share the same usage (0x36): HID assigns repeated local usage tags to a
+/// multi-count item in declaration order, so the two tags below map to
+/// Internal Diode and External Diode 1 respectively, in the same order
+/// `smbus::ThermalTelemetry`/[`thermal_report_task`] write them in.
+#[rustfmt::skip]
+const THERMAL_REPORT_DESCRIPTOR: &[u8] = &[
+    0x05, 0x84,       // Usage Page (Power Device)
+    0x09, 0x05,       // Usage (PowerSupply)
+    0xA1, 0x01,       // Collection (Application)
 
     0x75, 0x10,       //   Report Size (16)
     0x95, 0x02,       //   Report Count (2)
@@ -148,26 +167,43 @@ impl RequestHandler for BrightnessHandler {
     }
 }
 
-/// Read-only: reports whatever's in the PSU telemetry statics, rejects
-/// writes. Consistent with `src/smbus.rs` staying read-only until we
-/// actually know the PA-2311-02A's own (still-unidentified) PMBus chip's
-/// register map — everything in [`PSU_TELEMETRY`], including this
-/// interface, comes from the confirmed INA219/EMC1403 instead, not that
-/// chip.
-struct PsuHandler;
+/// Read-only: reports whatever's in [`POWER_TELEMETRY`], rejects writes.
+/// Consistent with `src/smbus.rs` staying read-only until we actually know
+/// the PA-2311-02A's own (still-unidentified) PMBus chip's register map —
+/// this comes from the confirmed INA219 instead, not that chip.
+struct PowerHandler;
 
-impl RequestHandler for PsuHandler {
+impl RequestHandler for PowerHandler {
     fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
         match id {
             ReportId::Feature(_) | ReportId::In(_) => {
-                let telemetry = PSU_TELEMETRY.try_get().unwrap();
+                let power = POWER_TELEMETRY.try_get().unwrap();
                 let mut report = Report::new(buf);
                 report
-                    .field(telemetry.voltage_mv)
-                    .field(telemetry.current_ma)
-                    .field(telemetry.power_mw)
-                    .field(telemetry.internal_decic)
-                    .field(telemetry.external1_decic);
+                    .field(power.voltage_mv)
+                    .field(power.current_ma)
+                    .field(power.power_mw);
+                Some(report.len())
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Read-only: reports whatever's in [`THERMAL_TELEMETRY`], rejects writes.
+/// Same rationale as [`PowerHandler`] — this comes from the confirmed
+/// EMC1403, not the PSU's still-unidentified PMBus chip.
+struct ThermalHandler;
+
+impl RequestHandler for ThermalHandler {
+    fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
+        match id {
+            ReportId::Feature(_) | ReportId::In(_) => {
+                let thermal = THERMAL_TELEMETRY.try_get().unwrap();
+                let mut report = Report::new(buf);
+                report
+                    .field(thermal.internal_decic)
+                    .field(thermal.external1_decic);
                 Some(report.len())
             }
             _ => None,
@@ -176,16 +212,21 @@ impl RequestHandler for PsuHandler {
 }
 
 /// Everything spawned tasks need: the [`UsbDevice`] itself, and each HID
-/// interface's writer for pushing Input reports.
+/// interface's writer for pushing Input reports. Built in this same order
+/// (brightness, power, thermal) by [`init`], which is what fixes their USB
+/// interface numbers at 0/1/2 — `cinectl/src/device.rs` relies on that
+/// order to tell the interfaces apart.
 pub struct UsbPeripherals {
     pub usb: UsbDevice<'static, UsbDriver>,
     pub brightness_writer: HidWriter<'static, UsbDriver, 2>,
-    pub psu_writer: HidWriter<'static, UsbDriver, 12>,
+    pub power_writer: HidWriter<'static, UsbDriver, 8>,
+    pub thermal_writer: HidWriter<'static, UsbDriver, 4>,
 }
 
-/// Sets up the USB device with two HID interfaces: the VESA Monitor
-/// brightness control, and the Power Device telemetry interface.
-/// `unique_id` (currently the RP2040 board's factory flash ID, see
+/// Sets up the USB device with three HID interfaces: the VESA Monitor
+/// brightness control, and the two Power Device telemetry interfaces (see
+/// the module doc comment for why voltage/current/power and temperature are
+/// split). `unique_id` (currently the RP2040 board's factory flash ID, see
 /// `board.rs`) becomes the USB serial number, so every board is
 /// distinguishable out of the box — no provisioning step, and nothing for
 /// `cinectl` to set. Taken as a plain `&str` (clamped to what a USB string
@@ -193,7 +234,7 @@ pub struct UsbPeripherals {
 /// shaped around how it's derived today, so a different source later —
 /// another chip's ID scheme, or a user-assigned name — is just a different
 /// caller, not a change here. Ready to spawn via [`usb_task`],
-/// [`hid_report_task`] and [`psu_report_task`].
+/// [`hid_report_task`], [`power_report_task`] and [`thermal_report_task`].
 pub fn init(usb_driver: UsbDriver, unique_id: &'static str) -> UsbPeripherals {
     let mut builder = usb_builder(usb_driver, unique_id);
 
@@ -206,13 +247,22 @@ pub fn init(usb_driver: UsbDriver, unique_id: &'static str) -> UsbPeripherals {
         BRIGHTNESS_STATE.init(HidState::new()),
     );
 
-    static PSU_HANDLER: StaticCell<PsuHandler> = StaticCell::new();
-    static PSU_STATE: StaticCell<HidState> = StaticCell::new();
-    let psu_writer = build_hid_writer(
+    static POWER_HANDLER: StaticCell<PowerHandler> = StaticCell::new();
+    static POWER_STATE: StaticCell<HidState> = StaticCell::new();
+    let power_writer = build_hid_writer(
         &mut builder,
-        PSU_REPORT_DESCRIPTOR,
-        PSU_HANDLER.init(PsuHandler),
-        PSU_STATE.init(HidState::new()),
+        POWER_REPORT_DESCRIPTOR,
+        POWER_HANDLER.init(PowerHandler),
+        POWER_STATE.init(HidState::new()),
+    );
+
+    static THERMAL_HANDLER: StaticCell<ThermalHandler> = StaticCell::new();
+    static THERMAL_STATE: StaticCell<HidState> = StaticCell::new();
+    let thermal_writer = build_hid_writer(
+        &mut builder,
+        THERMAL_REPORT_DESCRIPTOR,
+        THERMAL_HANDLER.init(ThermalHandler),
+        THERMAL_STATE.init(HidState::new()),
     );
 
     let usb = builder.build();
@@ -220,7 +270,8 @@ pub fn init(usb_driver: UsbDriver, unique_id: &'static str) -> UsbPeripherals {
     UsbPeripherals {
         usb,
         brightness_writer,
-        psu_writer,
+        power_writer,
+        thermal_writer,
     }
 }
 
@@ -315,24 +366,42 @@ pub async fn hid_report_task(mut writer: HidWriter<'static, UsbDriver, 2>) -> ! 
 }
 
 #[embassy_executor::task]
-pub async fn psu_report_task(mut writer: HidWriter<'static, UsbDriver, 12>) -> ! {
+pub async fn power_report_task(mut writer: HidWriter<'static, UsbDriver, 8>) -> ! {
     writer.ready().await;
-    let mut telemetry = PSU_TELEMETRY.receiver().unwrap();
-    let mut value = telemetry.try_get().unwrap();
+    let mut power = POWER_TELEMETRY.receiver().unwrap();
+    let mut value = power.try_get().unwrap();
 
     loop {
-        let mut report_buf = [0u8; 12];
+        let mut report_buf = [0u8; 8];
         Report::new(&mut report_buf)
             .field(value.voltage_mv)
             .field(value.current_ma)
-            .field(value.power_mw)
+            .field(value.power_mw);
+
+        if let Err(e) = writer.write(&report_buf).await {
+            warn!("power input report write failed: {:?}", e);
+        }
+
+        value = power.changed().await;
+    }
+}
+
+#[embassy_executor::task]
+pub async fn thermal_report_task(mut writer: HidWriter<'static, UsbDriver, 4>) -> ! {
+    writer.ready().await;
+    let mut thermal = THERMAL_TELEMETRY.receiver().unwrap();
+    let mut value = thermal.try_get().unwrap();
+
+    loop {
+        let mut report_buf = [0u8; 4];
+        Report::new(&mut report_buf)
             .field(value.internal_decic)
             .field(value.external1_decic);
 
         if let Err(e) = writer.write(&report_buf).await {
-            warn!("psu input report write failed: {:?}", e);
+            warn!("thermal input report write failed: {:?}", e);
         }
 
-        value = telemetry.changed().await;
+        value = thermal.changed().await;
     }
 }
