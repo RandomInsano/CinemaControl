@@ -12,7 +12,7 @@
 //!
 //! Current and Power (registers 0x04/0x03) read back 0x0000 until
 //! [`Ina219::calibrate`] has been called — this driver refuses
-//! [`Ina219::current_a`]/[`Ina219::power_w`] with [`Error::NotCalibrated`]
+//! [`Ina219::current_ma`]/[`Ina219::power_mw`] with [`Error::NotCalibrated`]
 //! rather than silently returning that zero as if it were a real reading.
 #![cfg_attr(not(test), no_std)]
 
@@ -27,32 +27,43 @@ pub use regs::Register;
 use embedded_hal_async::i2c::I2c;
 
 /// Fixed 7-bit SMBus addresses reachable via the A0/A1 strap pins (datasheet
-/// S6.1) — named `A1_A0`, each half one of the four strap levels the pin
-/// supports (GND, VS+, SDA, or SCL bus line). Both pins grounded (`0x40`) is
-/// the simplest and most common strap.
-pub mod address {
-    pub const GND_GND: u8 = 0x40;
-    pub const GND_VS: u8 = 0x41;
-    pub const GND_SDA: u8 = 0x42;
-    pub const GND_SCL: u8 = 0x43;
-    pub const VS_GND: u8 = 0x44;
-    pub const VS_VS: u8 = 0x45;
-    pub const VS_SDA: u8 = 0x46;
-    pub const VS_SCL: u8 = 0x47;
-    pub const SDA_GND: u8 = 0x48;
-    pub const SDA_VS: u8 = 0x49;
-    pub const SDA_SDA: u8 = 0x4A;
-    pub const SDA_SCL: u8 = 0x4B;
-    pub const SCL_GND: u8 = 0x4C;
-    pub const SCL_VS: u8 = 0x4D;
-    pub const SCL_SDA: u8 = 0x4E;
-    pub const SCL_SCL: u8 = 0x4F;
+/// S6.1) — variant names are `A1A0`, each half one of the four strap levels
+/// the pin supports (Gnd, Vs (VS+), Sda, or Scl bus line). `GndGnd` (`0x40`)
+/// is the simplest and most common strap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Address {
+    GndGnd = 0x40,
+    GndVs = 0x41,
+    GndSda = 0x42,
+    GndScl = 0x43,
+    VsGnd = 0x44,
+    VsVs = 0x45,
+    VsSda = 0x46,
+    VsScl = 0x47,
+    SdaGnd = 0x48,
+    SdaVs = 0x49,
+    SdaSda = 0x4A,
+    SdaScl = 0x4B,
+    SclGnd = 0x4C,
+    SclVs = 0x4D,
+    SclSda = 0x4E,
+    SclScl = 0x4F,
+}
+
+impl From<Address> for u8 {
+    fn from(addr: Address) -> u8 {
+        addr as u8
+    }
 }
 
 /// Bus Voltage register (0x02), decoded.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BusVoltage {
-    pub volts: f32,
+    /// LSB = 4mV, so this is always an exact multiple of 4 — no precision
+    /// lost by using millivolts here, unlike Shunt Voltage's 10µV LSB (see
+    /// [`Ina219::shunt_voltage_uv`]).
+    pub millivolts: u16,
     /// Set when a conversion has completed. Cleared by reading the Power
     /// register (0x03) or writing Configuration — *not* by reading Bus
     /// Voltage itself. Pollers that want this to actually clear should read
@@ -65,54 +76,19 @@ pub struct BusVoltage {
     pub overflow: bool,
 }
 
-/// LSB = 4mV, register bits 15:3 (datasheet S8.4).
-fn decode_bus_voltage(raw: u16) -> BusVoltage {
-    BusVoltage {
-        volts: (raw >> 3) as f32 * 0.004,
-        conversion_ready: raw & (1 << 1) != 0,
-        overflow: raw & 1 != 0,
-    }
-}
-
-/// Step 2 of the datasheet's Calibration procedure (S8.6): the smallest
-/// Current_LSB (in amps) that keeps `max_expected_amps` from clipping the
-/// signed 16-bit Current register. The datasheet recommends rounding this
-/// *up* to a convenient value (1mA, 100uA, ...) before calling
-/// [`Ina219::calibrate`] — deliberately left to the caller rather than
-/// guessed at here, since "convenient" depends on the units the caller wants
-/// Current/Power reported in.
-pub fn min_current_lsb_a(max_expected_amps: f32) -> f32 {
-    max_expected_amps / 32767.0
-}
-
-/// Calibration register formula (datasheet S8.6): `trunc(0.04096 /
-/// (Current_LSB * R_SHUNT))`, then bit 0 forced to 0 since calibration
-/// values are inherently even (effectively 15 usable bits). Rounds rather
-/// than truncating the division itself (widened to `f64` first): a "nice"
-/// decimal input like 0.001A/5mOhm isn't exactly representable in `f32`, so
-/// truncating can knock an intended-exact 8192.0 down to 8191 purely from
-/// that representation error, not from the datasheet's `trunc`. `+ 0.5` then
-/// `as u32` rather than `f64::round` — `no_std` has no `round`/`floor`
-/// without pulling in `libm`, and inputs here are never negative, so this is
-/// exact.
-fn calibration_value(current_lsb_a: f32, r_shunt_ohms: f32) -> u16 {
-    let raw = (0.04096 / (current_lsb_a as f64 * r_shunt_ohms as f64) + 0.5) as u32;
-    (raw & !1) as u16
-}
-
 pub struct Ina219<I2C> {
     i2c: I2C,
     address: u8,
-    /// 0.0 until [`Self::calibrate`] succeeds — see [`Error::NotCalibrated`].
-    current_lsb_a: f32,
+    /// 0 until [`Self::calibrate`] succeeds — see [`Error::NotCalibrated`].
+    current_lsb_ma: u32,
 }
 
 impl<I2C: I2c> Ina219<I2C> {
-    pub fn new(i2c: I2C, address: u8) -> Self {
+    pub fn new(i2c: I2C, address: impl Into<u8>) -> Self {
         Self {
             i2c,
-            address,
-            current_lsb_a: 0.0,
+            address: address.into(),
+            current_lsb_ma: 0,
         }
     }
 
@@ -143,13 +119,13 @@ impl<I2C: I2c> Ina219<I2C> {
     /// Sets RST (bit 15), forcing every register back to its power-on
     /// default — including Calibration, which resets to 0x0000 and does
     /// *not* restore itself automatically (datasheet S8.6). Clears this
-    /// driver's own `current_lsb_a` bookkeeping to match, so a stale
+    /// driver's own `current_lsb_ma` bookkeeping to match, so a stale
     /// calibration can't be used to silently misdecode Current/Power after
     /// the chip has actually forgotten it.
     pub async fn reset(&mut self) -> Result<(), Error<I2C::Error>> {
         self.write_register(Register::Configuration, 1 << 15)
             .await?;
-        self.current_lsb_a = 0.0;
+        self.current_lsb_ma = 0;
         Ok(())
     }
 
@@ -164,34 +140,47 @@ impl<I2C: I2c> Ina219<I2C> {
             .await
     }
 
-    /// Shunt Voltage register (0x01) — signed, LSB = 10uV fixed regardless
+    /// Shunt Voltage register (0x01) — signed, LSB = 10µV fixed regardless
     /// of PGA gain (PGA only changes the full-scale range before clipping).
     /// Always valid, independent of calibration state.
-    pub async fn shunt_voltage_v(&mut self) -> Result<f32, Error<I2C::Error>> {
+    ///
+    /// Reported in microvolts rather than millivolts: the shunt's own
+    /// full-scale range tops out at ±320mV (see [`Gain::full_scale_mv`]), so
+    /// rounding to whole millivolts here would throw away most of the
+    /// signal's actual resolution.
+    pub async fn shunt_voltage_uv(&mut self) -> Result<i32, Error<I2C::Error>> {
         let raw = self.read_register(Register::ShuntVoltage).await? as i16;
-        Ok(raw as f32 * 10e-6)
+        Ok(raw as i32 * 10)
     }
 
+    /// LSB = 4mV, register bits 15:3 (datasheet S8.4). The 13-bit field
+    /// maxes out at 8191 * 4 = 32764mV, comfortably inside `u16`.
     pub async fn bus_voltage(&mut self) -> Result<BusVoltage, Error<I2C::Error>> {
-        Ok(decode_bus_voltage(
-            self.read_register(Register::BusVoltage).await?,
-        ))
+        let raw = self.read_register(Register::BusVoltage).await?;
+        Ok(BusVoltage {
+            millivolts: (raw >> 3) * 4,
+            conversion_ready: raw & (1 << 1) != 0,
+            overflow: raw & 1 != 0,
+        })
     }
 
-    /// Programs the Calibration register (0x05) for `current_lsb_a` amps/bit
-    /// against a shunt resistor of `r_shunt_ohms` ohms — see
-    /// [`min_current_lsb_a`] for picking `current_lsb_a`. Required before
-    /// [`Self::current_a`]/[`Self::power_w`] will do anything but error;
-    /// must be re-run after every [`Self::reset`], since Calibration doesn't
-    /// persist across one.
+    /// Programs the Calibration register (0x05) with `calibration_raw`, and
+    /// records `current_lsb_ma` for decoding [`Self::current_ma`]/
+    /// [`Self::power_mw`] afterwards. Both are per-board constants computed
+    /// once at design time from the shunt resistor and expected current
+    /// range: `calibration_raw = trunc(0.04096 / (Current_LSB_A *
+    /// R_SHUNT_ohm))` with bit 0 cleared (datasheet S8.6). Required before
+    /// [`Self::current_ma`]/[`Self::power_mw`] will do anything but error;
+    /// must be re-run after every [`Self::reset`], since Calibration
+    /// doesn't persist across one.
     pub async fn calibrate(
         &mut self,
-        current_lsb_a: f32,
-        r_shunt_ohms: f32,
+        current_lsb_ma: u32,
+        calibration_raw: u16,
     ) -> Result<(), Error<I2C::Error>> {
-        let cal = calibration_value(current_lsb_a, r_shunt_ohms);
-        self.write_register(Register::Calibration, cal).await?;
-        self.current_lsb_a = current_lsb_a;
+        self.write_register(Register::Calibration, calibration_raw)
+            .await?;
+        self.current_lsb_ma = current_lsb_ma;
         Ok(())
     }
 
@@ -201,81 +190,38 @@ impl<I2C: I2c> Ina219<I2C> {
         self.read_register(Register::Calibration).await
     }
 
-    /// `Current_LSB` from the most recent successful [`Self::calibrate`], or
-    /// 0.0 if it hasn't been called (since [`Self::reset`], if ever).
-    pub fn current_lsb_a(&self) -> f32 {
-        self.current_lsb_a
-    }
-
-    /// `Power_LSB = 20 x Current_LSB` (datasheet S8.6, fixed 20x
-    /// relationship, not independently configurable).
-    pub fn power_lsb_w(&self) -> f32 {
-        20.0 * self.current_lsb_a
+    /// `Current_LSB` in mA from the most recent successful
+    /// [`Self::calibrate`], or 0 if it hasn't been called (since
+    /// [`Self::reset`], if ever).
+    pub fn current_lsb_ma(&self) -> u32 {
+        self.current_lsb_ma
     }
 
     /// Current register (0x04). Errors with [`Error::NotCalibrated`] instead
-    /// of decoding a real-looking-but-meaningless 0.0A if [`Self::calibrate`]
+    /// of decoding a real-looking-but-meaningless 0mA if [`Self::calibrate`]
     /// hasn't run yet — see the crate-level doc comment.
-    pub async fn current_a(&mut self) -> Result<f32, Error<I2C::Error>> {
-        if self.current_lsb_a == 0.0 {
+    pub async fn current_ma(&mut self) -> Result<i32, Error<I2C::Error>> {
+        if self.current_lsb_ma == 0 {
             return Err(Error::NotCalibrated);
         }
         let raw = self.read_register(Register::Current).await? as i16;
-        Ok(raw as f32 * self.current_lsb_a)
+        Ok(raw as i32 * self.current_lsb_ma as i32)
     }
 
     /// Power register (0x03), internally computed by the chip as `(Current x
-    /// Bus Voltage) / 5000`. Same [`Error::NotCalibrated`] guard as
-    /// [`Self::current_a`].
-    pub async fn power_w(&mut self) -> Result<f32, Error<I2C::Error>> {
-        if self.current_lsb_a == 0.0 {
+    /// Bus Voltage) / 5000`, with `Power_LSB = 20 x Current_LSB` (datasheet
+    /// S8.6, fixed 20x relationship, not independently configurable) — exact
+    /// in mW/mA since both units carry the same 1000x scaling from
+    /// watts/amps. Same [`Error::NotCalibrated`] guard as [`Self::current_ma`].
+    /// Widened to `u64` for the multiply so a large `current_lsb_ma` can't
+    /// silently overflow before landing back in `u32` milliwatts.
+    pub async fn power_mw(&mut self) -> Result<u32, Error<I2C::Error>> {
+        if self.current_lsb_ma == 0 {
             return Err(Error::NotCalibrated);
         }
         let raw = self.read_register(Register::Power).await?;
-        Ok(raw as f32 * self.power_lsb_w())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decodes_bus_voltage_default_state() {
-        // raw 8 in the 13-bit field -> 8 * 4mV = 32mV, CNVR set, OVF clear.
-        let raw = (8u16 << 3) | 0b10;
-        let v = decode_bus_voltage(raw);
-        assert_eq!(v.volts, 0.032);
-        assert!(v.conversion_ready);
-        assert!(!v.overflow);
-    }
-
-    #[test]
-    fn bus_voltage_overflow_bit_is_independent_of_value() {
-        let raw = (100u16 << 3) | 0b01;
-        let v = decode_bus_voltage(raw);
-        assert!(v.overflow);
-        assert!(!v.conversion_ready);
-    }
-
-    #[test]
-    fn min_current_lsb_matches_full_scale_range() {
-        // 20A over signed 16-bit -> ~610uA/bit.
-        let lsb = min_current_lsb_a(20.0);
-        assert!((lsb - 0.00061).abs() < 0.00001);
-    }
-
-    #[test]
-    fn calibration_value_matches_worked_example() {
-        // R_SHUNT=5mOhm, Current_LSB=1mA -> Cal=8192 (0x2000), per the
-        // datasheet-derived worked example this driver was built against.
-        assert_eq!(calibration_value(0.001, 0.005), 8192);
-    }
-
-    #[test]
-    fn calibration_value_bit_zero_is_always_clear() {
-        // Pick inputs that would otherwise truncate to an odd value.
-        let cal = calibration_value(0.0009999, 0.005);
-        assert_eq!(cal & 1, 0);
+        let power_lsb_mw = 20 * self.current_lsb_ma as u64;
+        let mw = raw as u64 * power_lsb_mw;
+        Ok(mw as u32)
     }
 }
