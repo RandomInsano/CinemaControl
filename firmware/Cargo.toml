@@ -16,6 +16,7 @@ embassy-time = { version = "0.5.1", features = ["defmt"] }
 embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt", "max-handler-count-2", "max-interface-count-2"] }
 embedded-hal-async = "1.0.0"
 emc1403 = { path = "../emc1403" }
+ina219 = { path = "../ina219" }
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 portable-atomic = { version = "1.15", features = ["critical-section"] }
 sequential-storage = { version = "8.0.1", features = ["defmt"] }

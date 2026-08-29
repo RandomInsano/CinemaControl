@@ -11,9 +11,10 @@
 //! until it's pointed elsewhere.
 //!
 //! Current and Power (registers 0x04/0x03) read back 0x0000 until
-//! [`Ina219::calibrate`] has been called — this driver refuses
-//! [`Ina219::current_ma`]/[`Ina219::power_mw`] with [`Error::NotCalibrated`]
-//! rather than silently returning that zero as if it were a real reading.
+//! [`Ina219::calibrate`] has been called — see [`Ina219::new`]'s doc comment
+//! for `current_lsb_ma`/`calibration_raw`, the two board constants that
+//! drive both [`Ina219::calibrate`] and how [`Ina219::current_ma`]/
+//! [`Ina219::power_mw`] decode their readings.
 #![cfg_attr(not(test), no_std)]
 
 pub mod config;
@@ -79,16 +80,33 @@ pub struct BusVoltage {
 pub struct Ina219<I2C> {
     i2c: I2C,
     address: u8,
-    /// 0 until [`Self::calibrate`] succeeds — see [`Error::NotCalibrated`].
     current_lsb_ma: u32,
+    calibration_raw: u16,
 }
 
 impl<I2C: I2c> Ina219<I2C> {
-    pub fn new(i2c: I2C, address: impl Into<u8>) -> Self {
+    /// `current_lsb_ma` and `calibration_raw` are per-board constants,
+    /// fixed for the life of the physical device — both computed once at
+    /// design time from the shunt resistor and expected current range, and
+    /// never anything that changes while the circuit is running (datasheet
+    /// S8.6): `calibration_raw = trunc(0.04096 / (Current_LSB_A *
+    /// R_SHUNT_ohm))` with bit 0 cleared, and `current_lsb_ma` is that same
+    /// `Current_LSB_A` in mA. Taking them here rather than as
+    /// [`Self::calibrate`] arguments means a fresh `Ina219` — e.g.
+    /// constructed per poll cycle on a bus shared with other devices — can
+    /// decode [`Self::current_ma`]/[`Self::power_mw`] correctly without
+    /// necessarily being the instance that last wrote Calibration itself.
+    pub fn new(
+        i2c: I2C,
+        address: impl Into<u8>,
+        current_lsb_ma: u32,
+        calibration_raw: u16,
+    ) -> Self {
         Self {
             i2c,
             address: address.into(),
-            current_lsb_ma: 0,
+            current_lsb_ma,
+            calibration_raw,
         }
     }
 
@@ -118,15 +136,13 @@ impl<I2C: I2c> Ina219<I2C> {
 
     /// Sets RST (bit 15), forcing every register back to its power-on
     /// default — including Calibration, which resets to 0x0000 and does
-    /// *not* restore itself automatically (datasheet S8.6). Clears this
-    /// driver's own `current_lsb_ma` bookkeeping to match, so a stale
-    /// calibration can't be used to silently misdecode Current/Power after
-    /// the chip has actually forgotten it.
+    /// *not* restore itself automatically (datasheet S8.6). Call
+    /// [`Self::calibrate`] again afterwards to reprogram it; `current_lsb_ma`
+    /// itself doesn't change (it's a fixed board property, not calibration
+    /// state), so [`Self::current_ma`]/[`Self::power_mw`] will keep decoding
+    /// with it even though the chip is reporting raw 0x0000 until then.
     pub async fn reset(&mut self) -> Result<(), Error<I2C::Error>> {
-        self.write_register(Register::Configuration, 1 << 15)
-            .await?;
-        self.current_lsb_ma = 0;
-        Ok(())
+        self.write_register(Register::Configuration, 1 << 15).await
     }
 
     pub async fn configuration(&mut self) -> Result<Configuration, Error<I2C::Error>> {
@@ -164,24 +180,13 @@ impl<I2C: I2c> Ina219<I2C> {
         })
     }
 
-    /// Programs the Calibration register (0x05) with `calibration_raw`, and
-    /// records `current_lsb_ma` for decoding [`Self::current_ma`]/
-    /// [`Self::power_mw`] afterwards. Both are per-board constants computed
-    /// once at design time from the shunt resistor and expected current
-    /// range: `calibration_raw = trunc(0.04096 / (Current_LSB_A *
-    /// R_SHUNT_ohm))` with bit 0 cleared (datasheet S8.6). Required before
-    /// [`Self::current_ma`]/[`Self::power_mw`] will do anything but error;
-    /// must be re-run after every [`Self::reset`], since Calibration
-    /// doesn't persist across one.
-    pub async fn calibrate(
-        &mut self,
-        current_lsb_ma: u32,
-        calibration_raw: u16,
-    ) -> Result<(), Error<I2C::Error>> {
-        self.write_register(Register::Calibration, calibration_raw)
-            .await?;
-        self.current_lsb_ma = current_lsb_ma;
-        Ok(())
+    /// Writes `calibration_raw` (given to [`Self::new`]) to the Calibration
+    /// register (0x05). Required before [`Self::current_ma`]/
+    /// [`Self::power_mw`] will read anything but 0; must be re-run after
+    /// every [`Self::reset`], since Calibration doesn't persist across one.
+    pub async fn calibrate(&mut self) -> Result<(), Error<I2C::Error>> {
+        self.write_register(Register::Calibration, self.calibration_raw)
+            .await
     }
 
     /// Raw Calibration register readback, e.g. to confirm what
@@ -190,35 +195,32 @@ impl<I2C: I2c> Ina219<I2C> {
         self.read_register(Register::Calibration).await
     }
 
-    /// `Current_LSB` in mA from the most recent successful
-    /// [`Self::calibrate`], or 0 if it hasn't been called (since
-    /// [`Self::reset`], if ever).
+    /// `Current_LSB` in mA, as given to [`Self::new`].
     pub fn current_lsb_ma(&self) -> u32 {
         self.current_lsb_ma
     }
 
-    /// Current register (0x04). Errors with [`Error::NotCalibrated`] instead
-    /// of decoding a real-looking-but-meaningless 0mA if [`Self::calibrate`]
-    /// hasn't run yet — see the crate-level doc comment.
+    /// Current register (0x04). Reads back 0 until [`Self::calibrate`] has
+    /// actually been run on the physical device (by this instance or
+    /// another one — see [`Self::new`]) — this driver trusts the caller on
+    /// that rather than tracking it at runtime. Widened to `i64` for the
+    /// multiply, same reasoning as [`Self::power_mw`]: a `current_lsb_ma`
+    /// above `i32::MAX` would otherwise get reinterpreted as negative by an
+    /// `as i32` cast before the multiply even ran.
     pub async fn current_ma(&mut self) -> Result<i32, Error<I2C::Error>> {
-        if self.current_lsb_ma == 0 {
-            return Err(Error::NotCalibrated);
-        }
         let raw = self.read_register(Register::Current).await? as i16;
-        Ok(raw as i32 * self.current_lsb_ma as i32)
+        let ma = raw as i64 * self.current_lsb_ma as i64;
+        Ok(ma as i32)
     }
 
     /// Power register (0x03), internally computed by the chip as `(Current x
     /// Bus Voltage) / 5000`, with `Power_LSB = 20 x Current_LSB` (datasheet
     /// S8.6, fixed 20x relationship, not independently configurable) — exact
     /// in mW/mA since both units carry the same 1000x scaling from
-    /// watts/amps. Same [`Error::NotCalibrated`] guard as [`Self::current_ma`].
-    /// Widened to `u64` for the multiply so a large `current_lsb_ma` can't
-    /// silently overflow before landing back in `u32` milliwatts.
+    /// watts/amps. Same calibration caveat as [`Self::current_ma`]. Widened
+    /// to `u64` for the multiply so a large `current_lsb_ma` can't silently
+    /// overflow before landing back in `u32` milliwatts.
     pub async fn power_mw(&mut self) -> Result<u32, Error<I2C::Error>> {
-        if self.current_lsb_ma == 0 {
-            return Err(Error::NotCalibrated);
-        }
         let raw = self.read_register(Register::Power).await?;
         let power_lsb_mw = 20 * self.current_lsb_ma as u64;
         let mw = raw as u64 * power_lsb_mw;

@@ -49,8 +49,9 @@ driver from `Board` and does only its own domain logic on top: `hid.rs`
 builds the USB descriptors/HID interfaces, `pwm.rs` seeds the duty cycle
 from `hid::BRIGHTNESS`, `storage.rs` wraps the flash in
 `sequential-storage`'s `MapStorage`. `smbus.rs` has nothing left to add on
-top, so it has no `init()` at all — `main.rs` spawns `smbus::scan_task(p.smbus)`
-directly. `board.rs` never reads another module's state (e.g.
+top, so it has no `init()` at all — `main.rs` spawns
+`smbus::telemetry_task(p.smbus)` directly. `board.rs` never reads another
+module's state (e.g.
 `hid::BRIGHTNESS`) to do this — that's specifically why seeding the
 backlight's initial duty cycle stays in `pwm.rs` rather than moving into
 `split()` with the rest of the PWM setup. `main.rs` is pure orchestration:
@@ -106,22 +107,23 @@ factory-programmed ID every boot rather than persisted.)
 
 ## SMBus / PA-2311-02A
 
-The PSU's register map is undocumented. `firmware/src/smbus.rs` is a
-**read-only** diagnostic scanner, not a real driver — no writes to the PSU.
-Don't add writes until we have real bus captures confirming what's safe to
-send.
+The PSU's own PMBus chip's register map is still undocumented and
+`firmware/src/smbus.rs` never touches it — no bus scanning/probing code
+lives here anymore (it did, historically, to help identify the two chips
+below from real bus captures; that's done, so it was deleted rather than
+kept as a read-only diagnostic feature). The module only talks to two
+confirmed, identified chips: a TI INA219 (`ina219` crate, real
+Voltage/Current/Power, calibrated per the confirmed shunt resistor value in
+`INA219_CALIBRATION_RAW`'s doc comment) and a Microchip EMC1403 (`emc1403`
+crate, real temperature). Both are read every
+`telemetry_task` cycle via `update_telemetry`.
 
 `smbus.rs` also owns `PsuTelemetry` / `PSU_TELEMETRY` — `hid.rs`'s second
-HID interface (Voltage/Current/Temperature, `PSU_REPORT_DESCRIPTOR`) just
-imports and reports it, since `smbus.rs` is the module that will eventually
-have real data to put there. Until the register map is known,
-`scan_task`'s `send_dummy_telemetry` pushes made-up-but-varying values into
-it purely so `psu_report_task`'s change-only reporting has something to
-exercise; replace that (not `PSU_TELEMETRY` itself) once a real PMBus read
-exists. The descriptor deliberately uses HID Power Device Usage 0x05
-"PowerSupply", not 0x04 "UPS" — this is telemetry from an internal PSU, not
-a battery-backup device, and tagging it UPS could make a host treat it like
-one (e.g. offer battery-loss shutdown behavior).
+HID interface (Voltage/Current/Power/Temperature, `PSU_REPORT_DESCRIPTOR`)
+just imports and reports it. The descriptor deliberately uses HID Power
+Device Usage 0x05 "PowerSupply", not 0x04 "UPS" — this is telemetry from an
+internal PSU, not a battery-backup device, and tagging it UPS could make a
+host treat it like one (e.g. offer battery-loss shutdown behavior).
 
 ## cinectl (host CLI)
 

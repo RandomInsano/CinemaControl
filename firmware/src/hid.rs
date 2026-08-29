@@ -1,6 +1,7 @@
 //! USB HID: VESA/USB Monitor Control Class brightness control, plus a
-//! Power Device interface bundling PSU telemetry (voltage/current still
-//! placeholder, temperature real via the EMC1403).
+//! Power Device interface bundling PSU telemetry (voltage/current/power via
+//! the INA219, calibrated per `smbus::INA219_CALIBRATION_RAW` — temperature
+//! via the EMC1403).
 
 use defmt::warn;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -65,21 +66,23 @@ const MONITOR_REPORT_DESCRIPTOR: &[u8] = &[
 /// HID Power Device report descriptor (Usage Page 0x84, Usage 0x05
 /// "PowerSupply" — deliberately not 0x04 "UPS", since this isn't a
 /// battery-backup device and shouldn't be treated like one). No Report IDs:
-/// it's the only report this interface has, so Voltage + Current + two
-/// Temperature channels just concatenate into one 8-byte Input and one
-/// 8-byte Feature report. Voltage/Current are unsigned millivolts/
-/// milliamps (still placeholder — see `smbus::PsuTelemetry`); the two
-/// Temperature fields are signed tenths of a degree C (-40.0 to 150.0) and
-/// are real EMC1403 reads. Both Temperature fields share the same usage
-/// (0x36): HID assigns repeated local usage tags to a multi-count item in
-/// declaration order, so the two tags below map to Internal Diode and
-/// External Diode 1 respectively, in the same order
-/// `smbus::PsuTelemetry`/[`psu_report_task`] write them in.
+/// it's the only report this interface has, so Voltage + Current + Power +
+/// two Temperature channels just concatenate into one 12-byte Input and one
+/// 12-byte Feature report. Voltage (unsigned mV), Current (signed mA — the
+/// INA219 is bidirectional), and Power (unsigned mW) are all real INA219
+/// reads, calibrated per `smbus::INA219_CALIBRATION_RAW`; the two
+/// Temperature fields are signed
+/// tenths of a degree C (-40.0 to 150.0) and are real EMC1403 reads. Both
+/// Temperature fields share the same usage (0x36): HID assigns repeated
+/// local usage tags to a multi-count item in declaration order, so the two
+/// tags below map to Internal Diode and External Diode 1 respectively, in
+/// the same order `smbus::PsuTelemetry`/[`psu_report_task`] write them in.
 #[rustfmt::skip]
 const PSU_REPORT_DESCRIPTOR: &[u8] = &[
     0x05, 0x84,       // Usage Page (Power Device)
     0x09, 0x05,       // Usage (PowerSupply)
     0xA1, 0x01,       // Collection (Application)
+
     0x15, 0x00,       //   Logical Minimum (0)
     0x26, 0xFF, 0x7F, //   Logical Maximum (32767)
     0x75, 0x10,       //   Report Size (16)
@@ -88,19 +91,33 @@ const PSU_REPORT_DESCRIPTOR: &[u8] = &[
     0x81, 0x02,       //   Input (Data,Var,Abs)
     0x09, 0x30,       //   Usage (Voltage)
     0xB1, 0x02,       //   Feature (Data,Var,Abs)
+
+    0x16, 0x00, 0x80, //   Logical Minimum (-32768)
+    0x26, 0xFF, 0x7F, //   Logical Maximum (32767)
     0x09, 0x31,       //   Usage (Current)
     0x81, 0x02,       //   Input (Data,Var,Abs)
     0x09, 0x31,       //   Usage (Current)
     0xB1, 0x02,       //   Feature (Data,Var,Abs)
+
+    0x15, 0x00,                   //   Logical Minimum (0)
+    0x27, 0x40, 0x42, 0x0F, 0x00, //   Logical Maximum (1,000,000)
+    0x75, 0x20,                   //   Report Size (32)
+    0x09, 0x34,                   //   Usage (ActivePower)
+    0x81, 0x02,                   //   Input (Data,Var,Abs)
+    0x09, 0x34,                   //   Usage (ActivePower)
+    0xB1, 0x02,                   //   Feature (Data,Var,Abs)
+
+    0x75, 0x10,       //   Report Size (16)
+    0x95, 0x02,       //   Report Count (2)
     0x16, 0x70, 0xFE, //   Logical Minimum (-400)
     0x26, 0xDC, 0x05, //   Logical Maximum (1500)
-    0x95, 0x02,       //   Report Count (2)
     0x09, 0x36,       //   Usage (Temperature) -- Internal Diode
     0x09, 0x36,       //   Usage (Temperature) -- External Diode 1
     0x81, 0x02,       //   Input (Data,Var,Abs)
     0x09, 0x36,       //   Usage (Temperature) -- Internal Diode
     0x09, 0x36,       //   Usage (Temperature) -- External Diode 1
     0xB1, 0x02,       //   Feature (Data,Var,Abs)
+
     0xC0,             // End Collection
 ];
 
@@ -133,9 +150,10 @@ impl RequestHandler for BrightnessHandler {
 
 /// Read-only: reports whatever's in the PSU telemetry statics, rejects
 /// writes. Consistent with `src/smbus.rs` staying read-only until we
-/// actually know the PA-2311-02A's own PMBus register map (the temperature
-/// fields, unlike voltage/current, are already real — see
-/// `smbus::PsuTelemetry`).
+/// actually know the PA-2311-02A's own (still-unidentified) PMBus chip's
+/// register map — everything in [`PSU_TELEMETRY`], including this
+/// interface, comes from the confirmed INA219/EMC1403 instead, not that
+/// chip.
 struct PsuHandler;
 
 impl RequestHandler for PsuHandler {
@@ -147,6 +165,7 @@ impl RequestHandler for PsuHandler {
                 report
                     .field(telemetry.voltage_mv)
                     .field(telemetry.current_ma)
+                    .field(telemetry.power_mw)
                     .field(telemetry.internal_decic)
                     .field(telemetry.external1_decic);
                 Some(report.len())
@@ -161,7 +180,7 @@ impl RequestHandler for PsuHandler {
 pub struct UsbPeripherals {
     pub usb: UsbDevice<'static, UsbDriver>,
     pub brightness_writer: HidWriter<'static, UsbDriver, 2>,
-    pub psu_writer: HidWriter<'static, UsbDriver, 8>,
+    pub psu_writer: HidWriter<'static, UsbDriver, 12>,
 }
 
 /// Sets up the USB device with two HID interfaces: the VESA Monitor
@@ -265,7 +284,11 @@ fn build_hid_writer<const N: usize>(
         report_descriptor,
         request_handler: Some(request_handler),
         poll_ms: 60,
-        max_packet_size: 8,
+        // Tied to `N` (each interface's own report size) rather than a
+        // shared hardcoded constant, so growing one interface's report (like
+        // the PSU one did, to fit Power) doesn't require also remembering to
+        // bump this in step.
+        max_packet_size: N as u16,
         hid_subclass: HidSubclass::No,
         hid_boot_protocol: HidBootProtocol::None,
     };
@@ -292,16 +315,17 @@ pub async fn hid_report_task(mut writer: HidWriter<'static, UsbDriver, 2>) -> ! 
 }
 
 #[embassy_executor::task]
-pub async fn psu_report_task(mut writer: HidWriter<'static, UsbDriver, 8>) -> ! {
+pub async fn psu_report_task(mut writer: HidWriter<'static, UsbDriver, 12>) -> ! {
     writer.ready().await;
     let mut telemetry = PSU_TELEMETRY.receiver().unwrap();
     let mut value = telemetry.try_get().unwrap();
 
     loop {
-        let mut report_buf = [0u8; 8];
+        let mut report_buf = [0u8; 12];
         Report::new(&mut report_buf)
             .field(value.voltage_mv)
             .field(value.current_ma)
+            .field(value.power_mw)
             .field(value.internal_decic)
             .field(value.external1_decic);
 

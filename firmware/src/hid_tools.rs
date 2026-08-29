@@ -19,6 +19,12 @@ impl ToLeBytes<2> for i16 {
     }
 }
 
+impl ToLeBytes<4> for u32 {
+    fn to_le_bytes(self) -> [u8; 4] {
+        u32::to_le_bytes(self)
+    }
+}
+
 /// Fills a HID report buffer one field at a time. Each [`Report::field`]
 /// call appends its bytes and returns `self` for chaining, so a report is
 /// just the list of fields it contains — no caller ever computes a slice

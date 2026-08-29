@@ -37,8 +37,8 @@ async fn main(spawner: Spawner) -> ! {
     let backlight = pwm::init(p.backlight);
     spawner.spawn(pwm::task(backlight).unwrap());
 
-    // --- SMBus diagnostic scanner for the PA-2311-02A PSU (read-only) ---
-    spawner.spawn(smbus::scan_task(p.smbus).unwrap());
+    // --- SMBus telemetry for the PA-2311-02A PSU ---
+    spawner.spawn(smbus::telemetry_task(p.smbus).unwrap());
 
     core::future::pending::<()>().await;
     unreachable!()

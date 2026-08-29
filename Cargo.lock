@@ -18,6 +18,7 @@ dependencies = [
  "embassy-usb",
  "embedded-hal-async",
  "emc1403",
+ "ina219",
  "panic-probe",
  "portable-atomic",
  "sequential-storage",
