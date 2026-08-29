@@ -1,20 +1,40 @@
-//! Read-only SMBus diagnostic scanner for the LiteOn PA-2311-02A PSU.
+//! SMBus diagnostics and telemetry for the LiteOn PA-2311-02A PSU's
+//! secondary side.
 //!
-//! The PSU's register map isn't publicly documented, so this doesn't try to
-//! be a real driver yet: it scans the bus, probes the standard PMBus command
-//! set, and falls back to a raw register sweep, logging everything over
-//! defmt/RTT so it can be mapped from real captures. No writes are ever
-//! issued to the PSU.
+//! The PSU's own PMBus register map isn't publicly documented, so most of
+//! this module is still a read-only diagnostic scanner: it scans the bus,
+//! probes the standard PMBus command set, and falls back to a raw register
+//! sweep, logging everything over defmt/RTT so it can be mapped from real
+//! captures. No writes are ever issued to that (still-unidentified) chip.
+//!
+//! The one exception is [`update_telemetry`]'s thermal half: the chip at
+//! 0x4D is a confirmed, identified Microchip EMC1403 (see the `emc1403`
+//! crate), so [`PsuTelemetry`]'s two temperature fields are read for real
+//! via that driver, independent of the PMBus guesswork above — see
+//! [`PsuTelemetry`]'s doc comment for which fields are real and which
+//! aren't yet.
 
-use defmt::info;
+use defmt::{info, warn};
 use embassy_embedded_hal::SetConfig;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::watch::Watch;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Delay, Duration, Timer};
 use embedded_hal_async::i2c::I2c as _;
+use emc1403::{Channel, Emc1403};
 use mcu_hal::i2c;
 
 use crate::board::SmbusBus;
+
+/// Confirmed physical device: an EMC1403-2 on the PSU's secondary-side
+/// SMBus (see the `emc1403` crate's device-identity doc) — only the
+/// internal diode and External Diode 1 are wired on this board.
+const EMC1403_ADDR: u8 = emc1403::address::EMC1403_2_EMC1404_2;
+
+/// `read_thermal_telemetry` sets this explicitly before every read rather
+/// than trusting whatever [`SCAN_FREQUENCIES_HZ`] left the bus at, since
+/// that sweep exists purely to find the still-unidentified PSU chip and has
+/// no reason to leave the bus in a state the EMC1403 is guaranteed to like.
+const EMC1403_FREQUENCY_HZ: u32 = 100_000;
 
 /// Every clock rate `scan_task` sweeps on each pass, since the PA-2311-02A
 /// (and any other SMBus/PMBus device this bus is ever pointed at) might not
@@ -41,15 +61,22 @@ async fn probe_ok<T>(fut: impl core::future::Future<Output = Result<T, i2c::Erro
     )
 }
 
-/// Bundled PA-2311-02A telemetry: voltage (mV), current (mA), and
-/// temperature (tenths of a degree C). All zero until [`scan_task`] actually
-/// decodes a real PMBus reply (see the module doc comment) instead of
-/// [`send_dummy_telemetry`].
+/// Bundled PA-2311-02A telemetry. Voltage (mV) and current (mA) are still
+/// entirely made up pending a decoded PMBus register map (see the module
+/// doc comment and [`update_telemetry`]'s dummy half). Internal Diode and
+/// External Diode 1 (tenths of a degree C) are real, read from the
+/// confirmed EMC1403 at 0x4D — Internal Diode is the on-die sensor in the
+/// EMC1403 package itself; External Diode 1 is wherever on the PSU board
+/// its remote diode is actually soldered (undocumented on this board).
+/// External Diode 2/3 aren't modeled — nothing indicates they're wired on
+/// this PSU (see the `emc1403` crate's device-identity doc). All fields
+/// zero until [`scan_task`] first runs [`update_telemetry`].
 #[derive(Clone, Copy, Default)]
 pub struct PsuTelemetry {
     pub voltage_mv: u16,
     pub current_ma: u16,
-    pub temperature_decic: i16,
+    pub internal_decic: i16,
+    pub external1_decic: i16,
 }
 
 /// Value plus change notification in one watch, so `hid::psu_report_task`
@@ -59,7 +86,8 @@ pub static PSU_TELEMETRY: Watch<CriticalSectionRawMutex, PsuTelemetry, 1> =
     Watch::new_with(PsuTelemetry {
         voltage_mv: 0,
         current_ma: 0,
-        temperature_decic: 0,
+        internal_decic: 0,
+        external1_decic: 0,
     });
 
 /// How wide a PMBus command's reply is, per the spec — reading every command
@@ -119,25 +147,57 @@ pub async fn scan_task(mut i2c: SmbusBus) -> ! {
             scan_bus(&mut i2c).await;
         }
 
-        // The register map isn't decoded yet (see the module doc comment),
-        // so there's nothing real to feed `PSU_TELEMETRY` from. Push a
-        // slowly-varying made-up reading instead, purely so `psu_report_task`
-        // has actual changes to exercise its change-only reporting with.
-        send_dummy_telemetry(dummy_cycle);
+        update_telemetry(&mut i2c, dummy_cycle).await;
         dummy_cycle = dummy_cycle.wrapping_add(1);
 
         Timer::after(Duration::from_secs(30)).await;
     }
 }
 
-/// See the call site in [`scan_task`]: not a PSU reading, just a value that
-/// moves a little every cycle.
-fn send_dummy_telemetry(cycle: u16) {
-    PSU_TELEMETRY.sender().send(PsuTelemetry {
-        voltage_mv: 12_000 + (cycle % 50) * 4,
-        current_ma: 1_500 + (cycle % 30) * 10,
-        temperature_decic: 350 + (cycle % 20) as i16 * 5,
-    });
+/// Refreshes [`PSU_TELEMETRY`]. Voltage/current are still entirely made up
+/// (see the module doc comment — PMBus is undecoded): `cycle` just drives a
+/// slowly-varying value, purely so `hid::psu_report_task`'s change-only
+/// reporting has actual changes to exercise. The two temperature fields are
+/// real EMC1403 reads via [`try_read_thermal`], re-probed and re-read every
+/// call rather than caching an "already identified" flag — at this ~30s
+/// cadence the extra three identification-register reads are negligible,
+/// and it means a PSU power cycle (or the diagnostic scan above briefly
+/// wedging the bus at an unfriendly frequency) self-heals on the next pass
+/// instead of latching a failure forever. On a thermal read failure, the
+/// previous cycle's temperatures are kept rather than zeroed, so a
+/// transient bus hiccup doesn't look like a real 0.0C reading downstream.
+async fn update_telemetry(i2c: &mut SmbusBus, cycle: u16) {
+    let mut telemetry = PSU_TELEMETRY.try_get().unwrap();
+    telemetry.voltage_mv = 12_000 + (cycle % 50) * 4;
+    telemetry.current_ma = 1_500 + (cycle % 30) * 10;
+
+    match try_read_thermal(i2c).await {
+        Ok((internal_decic, external1_decic)) => {
+            telemetry.internal_decic = internal_decic;
+            telemetry.external1_decic = external1_decic;
+        }
+        Err(e) => warn!("EMC1403 thermal read failed: {}", defmt::Debug2Format(&e)),
+    }
+
+    PSU_TELEMETRY.sender().send(telemetry);
+}
+
+/// The EMC1403 half of [`update_telemetry`], split out so `?` can bail on
+/// the first failure — probe or either channel read — without the caller
+/// needing to know which. Returns (internal, external1) in tenths of a
+/// degree C.
+async fn try_read_thermal(i2c: &mut SmbusBus) -> Result<(i16, i16), emc1403::Error<i2c::Error>> {
+    let mut config = i2c::Config::default();
+    config.frequency = EMC1403_FREQUENCY_HZ;
+    i2c.set_config(&config).unwrap();
+
+    let mut sensor = Emc1403::new(i2c, EMC1403_ADDR);
+    sensor.probe(&mut Delay).await?;
+
+    let internal_c = sensor.read_temp_c(Channel::Internal).await?;
+    let external1_c = sensor.read_temp_c(Channel::External1).await?;
+
+    Ok(((internal_c * 10.0) as i16, (external1_c * 10.0) as i16))
 }
 
 /// Runs one full pass over every 7-bit address, logging whatever is found.
