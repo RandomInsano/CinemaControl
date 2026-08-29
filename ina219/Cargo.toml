@@ -1,0 +1,8 @@
+[package]
+name = "ina219"
+version = "0.1.0"
+edition = "2024"
+description = "Driver for the TI INA219 zero-drift bidirectional current/power monitor"
+
+[dependencies]
+embedded-hal-async = "1.0.0"
