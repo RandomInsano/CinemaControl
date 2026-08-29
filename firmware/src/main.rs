@@ -28,7 +28,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(storage::task(store).unwrap());
 
     // --- USB HID (VESA Monitor brightness + PSU telemetry) ---
-    let usb = hid::init(p.usb);
+    let usb = hid::init(p.usb, p.unique_id);
     spawner.spawn(hid::usb_task(usb.usb).unwrap());
     spawner.spawn(hid::hid_report_task(usb.brightness_writer).unwrap());
     spawner.spawn(hid::psu_report_task(usb.psu_writer).unwrap());

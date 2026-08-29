@@ -152,10 +152,18 @@ pub struct UsbPeripherals {
 }
 
 /// Sets up the USB device with two HID interfaces: the VESA Monitor
-/// brightness control, and a placeholder PSU telemetry interface. Ready to
-/// spawn via [`usb_task`], [`hid_report_task`] and [`psu_report_task`].
-pub fn init(usb_driver: UsbDriver) -> UsbPeripherals {
-    let mut builder = usb_builder(usb_driver);
+/// brightness control, and a placeholder PSU telemetry interface.
+/// `unique_id` (currently the RP2040 board's factory flash ID, see
+/// `board.rs`) becomes the USB serial number, so every board is
+/// distinguishable out of the box — no provisioning step, and nothing for
+/// `cinectl` to set. Taken as a plain `&str` (clamped to what a USB string
+/// descriptor can hold in [`usb_device_config`]) rather than something
+/// shaped around how it's derived today, so a different source later —
+/// another chip's ID scheme, or a user-assigned name — is just a different
+/// caller, not a change here. Ready to spawn via [`usb_task`],
+/// [`hid_report_task`] and [`psu_report_task`].
+pub fn init(usb_driver: UsbDriver, unique_id: &'static str) -> UsbPeripherals {
+    let mut builder = usb_builder(usb_driver, unique_id);
 
     static BRIGHTNESS_HANDLER: StaticCell<BrightnessHandler> = StaticCell::new();
     static BRIGHTNESS_STATE: StaticCell<HidState> = StaticCell::new();
@@ -184,11 +192,21 @@ pub fn init(usb_driver: UsbDriver) -> UsbPeripherals {
     }
 }
 
-fn usb_device_config() -> UsbConfig<'static> {
+/// A USB string descriptor's `bLength` is one byte, and the descriptor is 2
+/// header bytes + 2 bytes per UTF-16 code unit — so at most
+/// `(255 - 2) / 2 = 126` UTF-16 code units fit. `embassy-usb` doesn't check
+/// this (an oversize string just silently truncates `bLength`, corrupting
+/// the descriptor), so `usb_device_config` clamps to it itself. Clamped by
+/// *byte* length, not actual UTF-16 length — conservative, since UTF-8 never
+/// takes fewer bytes than UTF-16 takes code units, so this can only truncate
+/// shorter than strictly necessary for non-ASCII input, never longer.
+const MAX_SERIAL_LEN: usize = 126;
+
+fn usb_device_config(unique_id: &'static str) -> UsbConfig<'static> {
     let mut config = UsbConfig::new(0x1209, 0xCC02); // pid.codes shared testing VID:PID
     config.manufacturer = Some("CinemaControl");
     config.product = Some("CinemaControl Monitor Controller");
-    config.serial_number = Some("CC-0001");
+    config.serial_number = Some(clamp_to_string_descriptor(unique_id));
     config.max_power = 100;
     config.max_packet_size_0 = 64;
     config.device_class = 0x00;
@@ -198,10 +216,15 @@ fn usb_device_config() -> UsbConfig<'static> {
     config
 }
 
+/// Truncates `s` to at most [`MAX_SERIAL_LEN`] bytes, at a `char` boundary.
+fn clamp_to_string_descriptor(s: &str) -> &str {
+    &s[..s.floor_char_boundary(MAX_SERIAL_LEN)]
+}
+
 /// Allocates the descriptor/control buffers `Builder` needs (as `'static`
 /// storage, since the `UsbDevice` it produces gets spawned as a task) and
 /// starts a `Builder` from them.
-fn usb_builder(usb_driver: UsbDriver) -> Builder<'static, UsbDriver> {
+fn usb_builder(usb_driver: UsbDriver, unique_id: &'static str) -> Builder<'static, UsbDriver> {
     static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
     static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
     static MSOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
@@ -209,7 +232,7 @@ fn usb_builder(usb_driver: UsbDriver) -> Builder<'static, UsbDriver> {
 
     Builder::new(
         usb_driver,
-        usb_device_config(),
+        usb_device_config(unique_id),
         CONFIG_DESC.init([0; 256]),
         BOS_DESC.init([0; 256]),
         MSOS_DESC.init([0; 256]),
