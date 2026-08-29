@@ -22,6 +22,11 @@ use mcu_hal::i2c;
 
 use crate::board::SmbusBus;
 
+/// How long to wait before reporting another sample. Absolute worst-case for
+/// the device is 136ms (68.10 ms (BADC) + 68.10 ms (SADC)), default case is
+/// ~1ms
+const REFRESH_RATE_MS: u64 = 150;
+
 /// Confirmed physical device: an EMC1403-2 on the PSU's secondary-side
 /// SMBus (see the `emc1403` crate's device-identity doc) — only the
 /// internal diode and External Diode 1 are wired on this board.
@@ -103,7 +108,7 @@ pub async fn telemetry_task(mut i2c: SmbusBus) -> ! {
 
     loop {
         update_telemetry(&mut i2c).await;
-        Timer::after(Duration::from_secs(3)).await;
+        Timer::after(Duration::from_millis(REFRESH_RATE_MS)).await;
     }
 }
 
