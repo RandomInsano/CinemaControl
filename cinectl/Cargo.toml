@@ -6,4 +6,4 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive"] }
-hidapi = "2.6.6"
+hidapi = { version = "2.6.6", features = ["macos-shared-device"] }

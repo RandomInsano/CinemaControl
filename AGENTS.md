@@ -25,7 +25,16 @@ requirement, a constraint that isn't visible in the code itself).
 `firmware/src/board.rs` owns all hardware bring-up: `board::split()` calls
 `mcu_hal::init(clock_config())` and turns every raw peripheral into the
 driver abstraction its module actually uses (`UsbDriver`, `Backlight` (a
-`Pwm`), `SmbusBus`, `BoardFlash`), bundled into a `Board`. No other module
+`Pwm`), `SmbusBus`, `BoardFlash`), bundled into a `Board` — plus
+`Board::unique_id: &'static str`, the RP2040's attached flash chip's
+factory-programmed 64-bit ID (read via `BoardFlash::blocking_unique_id`,
+hex-encoded here into `'static` storage). `hid.rs` uses it as the USB serial
+number, so every board is distinguishable without any provisioning step —
+but takes it as a plain string rather than anything shaped around flash IDs
+specifically (clamping it to what a USB string descriptor can hold in
+`usb_device_config`, not to 16 hex characters), so a future chip with a
+different ID scheme, or any other source entirely, only ever means changing
+`board.rs`. No other module
 calls a driver's `new()`, reaches into `mcu_hal::Peripherals` fields, or
 sees `mcu_hal::peripherals` types at all — `board.rs` is the only place raw
 chip/pin names and `bind_interrupts!`'s PAC-defined vector names
@@ -91,6 +100,10 @@ STM32F103C8 this project previously targeted, `embassy-rp`'s async `Flash`
 implements `embedded-storage-async` directly (given a DMA channel + `Async`
 mode), so no blocking-to-async adapter is needed.
 
+(The USB serial number is a separate concern — see `board::unique_id` above
+— and isn't stored here at all, since it's read fresh from the flash chip's
+factory-programmed ID every boot rather than persisted.)
+
 ## SMBus / PA-2311-02A
 
 The PSU's register map is undocumented. `firmware/src/smbus.rs` is a
@@ -121,12 +134,9 @@ crate, since a `no_std` firmware crate and a `std` CLI crate can't usefully
 share much beyond a handful of constants.
 
 `cinectl/src/device.rs` groups each board's two HID interfaces (brightness +
-PSU) and orders boards by USB serial number. All boards currently report the
-same hardcoded serial (`"CC-0001"` in `firmware/src/hid.rs`), so with more
-than one board connected their interfaces collide into a single entry —
-known and accepted for now (see the doc comment on `device::discover`); the
-real fix is giving each board a unique serial in firmware, not working
-around it here.
+PSU) and orders boards by USB serial number — which is unique per board out
+of the box (see `board::unique_id` above), so no provisioning workflow is
+needed here.
 
 ## Research
 

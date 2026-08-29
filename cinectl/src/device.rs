@@ -2,12 +2,10 @@
 //!
 //! The firmware exposes two HID interfaces per board (brightness + PSU
 //! telemetry, see `firmware/src/hid.rs`) under one composite USB device.
-//! Grouping/ordering here is by USB serial number — currently every board
-//! reports the same hardcoded serial (`"CC-0001"` in `firmware/src/hid.rs`),
-//! so with more than one board attached their interfaces collide into a
-//! single entry below (last one enumerated wins each slot). That's a
-//! firmware problem to fix (give each board a real serial), not something
-//! this file works around.
+//! Grouping/ordering here is by USB serial number, which the firmware
+//! derives from the RP2040's attached flash chip's factory-programmed
+//! unique ID — so every board is distinct out of the box, no provisioning
+//! step needed.
 
 use std::collections::BTreeMap;
 use std::ffi::CString;
