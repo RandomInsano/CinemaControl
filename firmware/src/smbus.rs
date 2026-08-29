@@ -138,19 +138,19 @@ pub async fn scan_task(mut i2c: SmbusBus) -> ! {
 
     let mut dummy_cycle: u16 = 0;
     loop {
-        for &frequency in SCAN_FREQUENCIES_HZ {
-            let mut config = i2c::Config::default();
-            config.frequency = frequency;
-            i2c.set_config(&config).unwrap();
+        // for &frequency in SCAN_FREQUENCIES_HZ {
+        //     let mut config = i2c::Config::default();
+        //     config.frequency = frequency;
+        //     i2c.set_config(&config).unwrap();
 
-            info!("--- scanning at {} Hz ---", frequency);
-            scan_bus(&mut i2c).await;
-        }
+        //     info!("--- scanning at {} Hz ---", frequency);
+        //     scan_bus(&mut i2c).await;
+        // }
 
         update_telemetry(&mut i2c, dummy_cycle).await;
         dummy_cycle = dummy_cycle.wrapping_add(1);
 
-        Timer::after(Duration::from_secs(30)).await;
+        Timer::after(Duration::from_secs(3)).await;
     }
 }
 
