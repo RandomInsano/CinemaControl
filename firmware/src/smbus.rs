@@ -11,6 +11,8 @@ use emc1403::{Channel, ConversionRate, Emc1403};
 use ina219::Ina219;
 use mcu_hal::i2c;
 
+use protocol::{PowerTelemetry, ThermalTelemetry};
+
 use crate::board::SmbusBus;
 use crate::shared_i2c::SharedI2c;
 
@@ -26,26 +28,12 @@ const INA219_CALIBRATION_RAW: u16 = 0x4000;
 const REFRESH_MARGIN_MS: u64 = 14;
 const I2C_CYCLE_TIMEOUT: Duration = Duration::from_millis(100);
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub struct PowerTelemetry {
-    pub voltage_mv: u16,
-    /// Sign depends on IN+/IN− wiring — see `INA219_register_map.md` S1.
-    pub current_ma: i16,
-    pub power_mw: u32,
-}
-
 pub static POWER_TELEMETRY: Watch<CriticalSectionRawMutex, PowerTelemetry, 1> =
     Watch::new_with(PowerTelemetry {
         voltage_mv: 0,
         current_ma: 0,
         power_mw: 0,
     });
-
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub struct ThermalTelemetry {
-    pub internal_decic: i16,
-    pub external1_decic: i16,
-}
 
 pub static THERMAL_TELEMETRY: Watch<CriticalSectionRawMutex, ThermalTelemetry, 1> =
     Watch::new_with(ThermalTelemetry {
@@ -91,7 +79,13 @@ pub async fn ina219_task(bus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>)
 
 #[derive(Debug)]
 enum PowerRailError {
-    Bus(ina219::Error<i2c::Error>),
+    Bus(
+        #[allow(
+            dead_code,
+            reason = "read via defmt::Debug2Format, not matched directly"
+        )]
+        ina219::Error<i2c::Error>,
+    ),
     Overflow,
 }
 

@@ -1,0 +1,5 @@
+[package]
+name = "protocol"
+version = "0.1.0"
+edition = "2024"
+description = "USB HID identifiers and report layout shared by firmware and cinectl"

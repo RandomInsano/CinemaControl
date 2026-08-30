@@ -6,9 +6,6 @@ use std::ffi::CString;
 use anyhow::{Context, Result, bail};
 use hidapi::HidApi;
 
-pub const VENDOR_ID: u16 = 0x1209;
-pub const PRODUCT_ID: u16 = 0xCC02;
-
 const BRIGHTNESS_INTERFACE: i32 = 0;
 const POWER_INTERFACE: i32 = 1;
 const THERMAL_INTERFACE: i32 = 2;
@@ -26,7 +23,7 @@ pub fn discover(api: &HidApi) -> Result<Vec<Board>> {
     let mut by_serial: BTreeMap<String, PartialBoard> = BTreeMap::new();
 
     for info in api.device_list() {
-        if info.vendor_id() != VENDOR_ID || info.product_id() != PRODUCT_ID {
+        if info.vendor_id() != protocol::VENDOR_ID || info.product_id() != protocol::PRODUCT_ID {
             continue;
         }
 

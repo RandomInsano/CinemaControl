@@ -4,11 +4,13 @@ use std::thread;
 use anyhow::{Context, Result};
 use hidapi::{HidApi, HidDevice};
 
+use protocol::{
+    BRIGHTNESS_REPORT_LEN, POWER_REPORT_LEN, PowerTelemetry, THERMAL_REPORT_LEN, ThermalTelemetry,
+};
+
 use crate::device::Board;
 use crate::report::{
-    self, BRIGHTNESS_FEATURE_REPORT_LEN, BRIGHTNESS_INPUT_REPORT_LEN, POWER_FEATURE_REPORT_LEN,
-    POWER_INPUT_REPORT_LEN, PowerTelemetry, THERMAL_FEATURE_REPORT_LEN, THERMAL_INPUT_REPORT_LEN,
-    ThermalTelemetry,
+    self, BRIGHTNESS_FEATURE_REPORT_LEN, POWER_FEATURE_REPORT_LEN, THERMAL_FEATURE_REPORT_LEN,
 };
 
 pub fn list(boards: &[Board]) -> Result<()> {
@@ -35,7 +37,7 @@ pub fn set_brightness(api: &HidApi, board: &Board, value: u16) -> Result<()> {
         .context("writing brightness feature report")?;
     println!(
         "brightness set to {}",
-        report::brightness_from_bytes([report[1], report[2]])
+        report::brightness_from_bytes(feature_payload(&report).try_into().unwrap())
     );
     Ok(())
 }
@@ -48,30 +50,52 @@ pub fn get_psu(api: &HidApi, board: &Board) -> Result<()> {
 }
 
 fn read_brightness(api: &HidApi, board: &Board) -> Result<u16> {
-    let device = open(api, &board.brightness_path)?;
-    let mut buf = [0u8; BRIGHTNESS_FEATURE_REPORT_LEN];
-    device
-        .get_feature_report(&mut buf)
-        .context("reading brightness feature report")?;
-    Ok(report::brightness_from_bytes([buf[1], buf[2]]))
+    read_feature(
+        api,
+        &board.brightness_path,
+        BRIGHTNESS_FEATURE_REPORT_LEN,
+        "brightness",
+        |payload| report::brightness_from_bytes(payload.try_into().unwrap()),
+    )
 }
 
 fn read_power(api: &HidApi, board: &Board) -> Result<PowerTelemetry> {
-    let device = open(api, &board.power_path)?;
-    let mut buf = [0u8; POWER_FEATURE_REPORT_LEN];
-    device
-        .get_feature_report(&mut buf)
-        .context("reading power feature report")?;
-    Ok(PowerTelemetry::from_bytes(buf[1..].try_into().unwrap()))
+    read_feature(
+        api,
+        &board.power_path,
+        POWER_FEATURE_REPORT_LEN,
+        "power",
+        |payload| PowerTelemetry::from_bytes(payload.try_into().unwrap()),
+    )
 }
 
 fn read_thermal(api: &HidApi, board: &Board) -> Result<ThermalTelemetry> {
-    let device = open(api, &board.thermal_path)?;
-    let mut buf = [0u8; THERMAL_FEATURE_REPORT_LEN];
+    read_feature(
+        api,
+        &board.thermal_path,
+        THERMAL_FEATURE_REPORT_LEN,
+        "thermal",
+        |payload| ThermalTelemetry::from_bytes(payload.try_into().unwrap()),
+    )
+}
+
+fn read_feature<T>(
+    api: &HidApi,
+    path: &std::ffi::CStr,
+    feature_len: usize,
+    label: &str,
+    decode: impl FnOnce(&[u8]) -> T,
+) -> Result<T> {
+    let device = open(api, path)?;
+    let mut buf = vec![0u8; feature_len];
     device
         .get_feature_report(&mut buf)
-        .context("reading thermal feature report")?;
-    Ok(ThermalTelemetry::from_bytes(buf[1..].try_into().unwrap()))
+        .with_context(|| format!("reading {label} feature report"))?;
+    Ok(decode(feature_payload(&buf[1..])))
+}
+
+fn feature_payload(buf: &[u8]) -> &[u8] {
+    &buf[1..]
 }
 
 enum Update {
@@ -91,13 +115,13 @@ pub fn watch(api: &HidApi, board: &Board, combined: bool) -> Result<()> {
     spawn_reader(
         brightness_device,
         tx.clone(),
-        BRIGHTNESS_INPUT_REPORT_LEN,
+        BRIGHTNESS_REPORT_LEN,
         |bytes| Update::Brightness(report::brightness_from_bytes([bytes[0], bytes[1]])),
     );
-    spawn_reader(power_device, tx.clone(), POWER_INPUT_REPORT_LEN, |bytes| {
+    spawn_reader(power_device, tx.clone(), POWER_REPORT_LEN, |bytes| {
         Update::Power(PowerTelemetry::from_bytes(bytes.try_into().unwrap()))
     });
-    spawn_reader(thermal_device, tx, THERMAL_INPUT_REPORT_LEN, |bytes| {
+    spawn_reader(thermal_device, tx, THERMAL_REPORT_LEN, |bytes| {
         Update::Thermal(ThermalTelemetry::from_bytes(bytes.try_into().unwrap()))
     });
 

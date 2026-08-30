@@ -1,14 +1,20 @@
 # Agent notes for CinemaControl2
 
-This is a Cargo workspace with two members: `firmware/` (the `no_std`
+This is a Cargo workspace centered on two crates: `firmware/` (the `no_std`
 RP2040 firmware) and `cinectl/` (a host-side CLI, used on macOS so far, that
 talks to it over USB HID — set/query/watch brightness and PSU telemetry).
-They don't share
-code; `cinectl/src/report.rs` deliberately re-implements the tiny wire-format
-layer rather than pulling in a third shared crate, since a `no_std` firmware
-crate and a `std` CLI crate can't usefully share much beyond a few constants
-and a byte layout. Everything below this point is `firmware`-specific unless
-a section says otherwise.
+`protocol/` is a small `no_std` crate holding everything both of them need to
+agree on: the USB IDs and report lengths (`VENDOR_ID`/`PRODUCT_ID`,
+`MAX_BRIGHTNESS`, `*_REPORT_LEN`), the `PowerTelemetry`/`ThermalTelemetry`
+structs themselves — including their wire encoding (`to_bytes`/`from_bytes`,
+built on the `Report` byte-buffer builder in `protocol/src/hid_tools.rs`) and
+`Display` impls (used by `cinectl`; unused but harmless in `firmware`, which
+logs via `defmt` instead) — and that `Report` builder itself, for anything
+that needs to build a HID report by hand (`hid.rs`'s brightness report,
+which has no struct of its own). `firmware/src/smbus.rs` and
+`cinectl/src/report.rs` both just import these rather than defining their own
+copies. Everything below this point is `firmware`-specific unless a section
+says otherwise.
 
 ## Comments
 
@@ -74,12 +80,14 @@ called from one place, don't extract it — leave it inline at the call site
 (with a comment above it if it needs a *why*, per the Comments section
 above).
 
-`firmware/src/hid_tools.rs` is a plain shared-utility module (the `Report`
-builder used by `hid.rs` to build report bytes without manual slice-range
-math) — not a peripheral subsystem, so it has no
-`bind_interrupts!`/`init()`/task shape. Put other non-peripheral, reusable
-helpers alongside it rather than growing `hid.rs`/etc. with things that
-aren't about the peripheral itself.
+The `Report` builder (building report bytes without manual slice-range math)
+lives in `protocol/src/hid_tools.rs`, not `firmware/`, since `protocol`'s own
+`PowerTelemetry`/`ThermalTelemetry::to_bytes` need it too — `hid.rs` only
+uses it directly for the brightness report, a bare `u16` with no shared
+struct of its own. Put other non-peripheral, reusable firmware-only helpers
+in a module alongside `hid.rs`/etc. rather than growing those files with
+things that aren't about the peripheral itself; anything both `firmware` and
+`cinectl` need belongs in `protocol/` instead.
 
 `hid::BRIGHTNESS` and `smbus::PSU_TELEMETRY` are each an
 `embassy_sync::watch::Watch` doing double duty as both the current value
@@ -135,13 +143,13 @@ host treat it like one (e.g. offer battery-loss shutdown behavior).
 
 ## cinectl (host CLI)
 
-`cinectl/` is a `std` binary crate (the other workspace member), built and
-used on macOS so far, that talks to the firmware over USB HID: `cinectl
-list|get-brightness|set-brightness|get-psu|watch`, via `hidapi`. It shares
-no code with `firmware/` — `cinectl/src/report.rs` re-implements the
-wire-format byte layout directly rather than pulling in a third shared
-crate, since a `no_std` firmware crate and a `std` CLI crate can't usefully
-share much beyond a handful of constants.
+`cinectl/` is a `std` binary crate, built and used on macOS so far, that
+talks to the firmware over USB HID: `cinectl
+list|get-brightness|set-brightness|get-psu|watch`, via `hidapi`. It depends
+on `protocol/` for everything covered above; `cinectl/src/report.rs` now
+just re-exports `protocol`'s telemetry structs plus the handful of
+brightness/report-length helpers that don't belong in a `no_std` crate
+(`brightness_from_bytes`, `brightness_feature_report`).
 
 `cinectl/src/device.rs` groups each board's two HID interfaces (brightness +
 PSU) and orders boards by USB serial number — which is unique per board out

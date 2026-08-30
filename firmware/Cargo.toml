@@ -19,5 +19,6 @@ emc1403 = { path = "../emc1403" }
 ina219 = { path = "../ina219" }
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 portable-atomic = { version = "1.15", features = ["critical-section"] }
+protocol = { path = "../protocol" }
 sequential-storage = { version = "8.0.1", features = ["defmt"] }
 static_cell = "2.1.1"

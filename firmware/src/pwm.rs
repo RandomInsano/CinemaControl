@@ -13,7 +13,7 @@ pub fn init(mut backlight: Backlight) -> Backlight {
 
 fn set_brightness(backlight: &mut Backlight, brightness: u16) {
     let max_duty = backlight.max_duty_cycle();
-    let duty = ((brightness as u32 * max_duty as u32) / hid::MAX_BRIGHTNESS as u32) as u16;
+    let duty = ((brightness as u32 * max_duty as u32) / protocol::MAX_BRIGHTNESS as u32) as u16;
     backlight.set_duty_cycle(duty).unwrap();
 }
 

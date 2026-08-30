@@ -13,16 +13,17 @@ use embassy_usb::control::OutResponse;
 use embassy_usb::{Builder, Config as UsbConfig, UsbDevice};
 use static_cell::StaticCell;
 
+use protocol::Report;
+
 use crate::board::UsbDriver;
-use crate::hid_tools::Report;
 use crate::smbus::{POWER_TELEMETRY, THERMAL_TELEMETRY};
 
 pub static BRIGHTNESS: Watch<CriticalSectionRawMutex, u16, 3> = Watch::new_with(512);
 
-pub const MAX_BRIGHTNESS: u16 = 1023;
-
 pub fn restore_brightness(value: u16) {
-    BRIGHTNESS.sender().send(value.min(MAX_BRIGHTNESS));
+    BRIGHTNESS
+        .sender()
+        .send(value.min(protocol::MAX_BRIGHTNESS));
 }
 
 /// VESA VCP code 0x10 "Luminance", Usage Page 0x82.
@@ -115,7 +116,7 @@ impl RequestHandler for BrightnessHandler {
     fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
         match id {
             ReportId::Feature(_) if data.len() >= 2 => {
-                let v = u16::from_le_bytes([data[0], data[1]]).min(MAX_BRIGHTNESS);
+                let v = u16::from_le_bytes([data[0], data[1]]).min(protocol::MAX_BRIGHTNESS);
                 BRIGHTNESS.sender().send(v);
                 defmt::info!("brightness set to {}", v);
                 OutResponse::Accepted
@@ -131,13 +132,9 @@ impl RequestHandler for PowerHandler {
     fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
         match id {
             ReportId::Feature(_) | ReportId::In(_) => {
-                let power = POWER_TELEMETRY.try_get().unwrap();
-                let mut report = Report::new(buf);
-                report
-                    .field(power.voltage_mv)
-                    .field(power.current_ma)
-                    .field(power.power_mw);
-                Some(report.len())
+                let bytes = POWER_TELEMETRY.try_get().unwrap().to_bytes();
+                buf[..bytes.len()].copy_from_slice(&bytes);
+                Some(bytes.len())
             }
             _ => None,
         }
@@ -150,12 +147,9 @@ impl RequestHandler for ThermalHandler {
     fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
         match id {
             ReportId::Feature(_) | ReportId::In(_) => {
-                let thermal = THERMAL_TELEMETRY.try_get().unwrap();
-                let mut report = Report::new(buf);
-                report
-                    .field(thermal.internal_decic)
-                    .field(thermal.external1_decic);
-                Some(report.len())
+                let bytes = THERMAL_TELEMETRY.try_get().unwrap().to_bytes();
+                buf[..bytes.len()].copy_from_slice(&bytes);
+                Some(bytes.len())
             }
             _ => None,
         }
@@ -164,9 +158,9 @@ impl RequestHandler for ThermalHandler {
 
 pub struct UsbPeripherals {
     pub usb: UsbDevice<'static, UsbDriver>,
-    pub brightness_writer: HidWriter<'static, UsbDriver, 2>,
-    pub power_writer: HidWriter<'static, UsbDriver, 8>,
-    pub thermal_writer: HidWriter<'static, UsbDriver, 4>,
+    pub brightness_writer: HidWriter<'static, UsbDriver, { protocol::BRIGHTNESS_REPORT_LEN }>,
+    pub power_writer: HidWriter<'static, UsbDriver, { protocol::POWER_REPORT_LEN }>,
+    pub thermal_writer: HidWriter<'static, UsbDriver, { protocol::THERMAL_REPORT_LEN }>,
 }
 
 pub fn init(usb_driver: UsbDriver, unique_id: &'static str) -> UsbPeripherals {
@@ -214,7 +208,7 @@ pub fn init(usb_driver: UsbDriver, unique_id: &'static str) -> UsbPeripherals {
 const MAX_SERIAL_LEN: usize = 126;
 
 fn usb_device_config(unique_id: &'static str) -> UsbConfig<'static> {
-    let mut config = UsbConfig::new(0x1209, 0xCC02); // pid.codes shared testing VID:PID
+    let mut config = UsbConfig::new(protocol::VENDOR_ID, protocol::PRODUCT_ID);
     config.manufacturer = Some("CinemaControl");
     config.product = Some("CinemaControl Monitor Controller");
     config.serial_number = Some(clamp_to_string_descriptor(unique_id));
@@ -270,7 +264,9 @@ pub async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) -> ! {
 }
 
 #[embassy_executor::task]
-pub async fn hid_report_task(mut writer: HidWriter<'static, UsbDriver, 2>) -> ! {
+pub async fn hid_report_task(
+    mut writer: HidWriter<'static, UsbDriver, { protocol::BRIGHTNESS_REPORT_LEN }>,
+) -> ! {
     writer.ready().await;
     let mut brightness = BRIGHTNESS.receiver().unwrap();
     let mut value = brightness.try_get().unwrap();
@@ -284,19 +280,15 @@ pub async fn hid_report_task(mut writer: HidWriter<'static, UsbDriver, 2>) -> ! 
 }
 
 #[embassy_executor::task]
-pub async fn power_report_task(mut writer: HidWriter<'static, UsbDriver, 8>) -> ! {
+pub async fn power_report_task(
+    mut writer: HidWriter<'static, UsbDriver, { protocol::POWER_REPORT_LEN }>,
+) -> ! {
     writer.ready().await;
     let mut power = POWER_TELEMETRY.receiver().unwrap();
     let mut value = power.try_get().unwrap();
 
     loop {
-        let mut report_buf = [0u8; 8];
-        Report::new(&mut report_buf)
-            .field(value.voltage_mv)
-            .field(value.current_ma)
-            .field(value.power_mw);
-
-        if let Err(e) = writer.write(&report_buf).await {
+        if let Err(e) = writer.write(&value.to_bytes()).await {
             warn!("power input report write failed: {:?}", e);
         }
 
@@ -305,18 +297,15 @@ pub async fn power_report_task(mut writer: HidWriter<'static, UsbDriver, 8>) -> 
 }
 
 #[embassy_executor::task]
-pub async fn thermal_report_task(mut writer: HidWriter<'static, UsbDriver, 4>) -> ! {
+pub async fn thermal_report_task(
+    mut writer: HidWriter<'static, UsbDriver, { protocol::THERMAL_REPORT_LEN }>,
+) -> ! {
     writer.ready().await;
     let mut thermal = THERMAL_TELEMETRY.receiver().unwrap();
     let mut value = thermal.try_get().unwrap();
 
     loop {
-        let mut report_buf = [0u8; 4];
-        Report::new(&mut report_buf)
-            .field(value.internal_decic)
-            .field(value.external1_decic);
-
-        if let Err(e) = writer.write(&report_buf).await {
+        if let Err(e) = writer.write(&value.to_bytes()).await {
             warn!("thermal input report write failed: {:?}", e);
         }
 

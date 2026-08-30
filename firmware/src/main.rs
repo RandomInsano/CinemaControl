@@ -3,7 +3,6 @@
 
 mod board;
 mod hid;
-mod hid_tools;
 mod pwm;
 mod shared_i2c;
 mod smbus;
