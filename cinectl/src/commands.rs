@@ -9,9 +9,7 @@ use protocol::{
 };
 
 use crate::device::Board;
-use crate::report::{
-    self, BRIGHTNESS_FEATURE_REPORT_LEN, POWER_FEATURE_REPORT_LEN, THERMAL_FEATURE_REPORT_LEN,
-};
+use crate::report;
 
 pub fn list(boards: &[Board]) -> Result<()> {
     if boards.is_empty() {
@@ -53,7 +51,7 @@ fn read_brightness(api: &HidApi, board: &Board) -> Result<u16> {
     read_feature(
         api,
         &board.brightness_path,
-        BRIGHTNESS_FEATURE_REPORT_LEN,
+        BRIGHTNESS_REPORT_LEN,
         "brightness",
         |payload| report::brightness_from_bytes(payload.try_into().unwrap()),
     )
@@ -63,7 +61,7 @@ fn read_power(api: &HidApi, board: &Board) -> Result<PowerTelemetry> {
     read_feature(
         api,
         &board.power_path,
-        POWER_FEATURE_REPORT_LEN,
+        POWER_REPORT_LEN,
         "power",
         |payload| PowerTelemetry::from_bytes(payload.try_into().unwrap()),
     )
@@ -73,7 +71,7 @@ fn read_thermal(api: &HidApi, board: &Board) -> Result<ThermalTelemetry> {
     read_feature(
         api,
         &board.thermal_path,
-        THERMAL_FEATURE_REPORT_LEN,
+        THERMAL_REPORT_LEN,
         "thermal",
         |payload| ThermalTelemetry::from_bytes(payload.try_into().unwrap()),
     )
@@ -82,16 +80,16 @@ fn read_thermal(api: &HidApi, board: &Board) -> Result<ThermalTelemetry> {
 fn read_feature<T>(
     api: &HidApi,
     path: &std::ffi::CStr,
-    feature_len: usize,
+    report_len: usize,
     label: &str,
     decode: impl FnOnce(&[u8]) -> T,
 ) -> Result<T> {
     let device = open(api, path)?;
-    let mut buf = vec![0u8; feature_len];
+    let mut buf = vec![0u8; report_len + 1];
     device
         .get_feature_report(&mut buf)
         .with_context(|| format!("reading {label} feature report"))?;
-    Ok(decode(feature_payload(&buf[1..])))
+    Ok(decode(feature_payload(&buf)))
 }
 
 fn feature_payload(buf: &[u8]) -> &[u8] {
