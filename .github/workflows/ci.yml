@@ -70,7 +70,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "description=$DESCRIPTION" >> "$GITHUB_OUTPUT"
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cinectl-linux-binary
           path: target/release/cinectl
@@ -95,7 +95,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Download cinectl binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: cinectl-linux-binary
           path: target/release
@@ -122,7 +122,7 @@ jobs:
       - name: Verify cinectl list
         run: cinectl list
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cinectl-deb
           path: dist/*.deb
@@ -135,7 +135,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Download cinectl binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: cinectl-linux-binary
           path: target/release
@@ -165,7 +165,7 @@ jobs:
       - name: Verify cinectl list
         run: cinectl list
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cinectl-rpm
           path: dist/*.rpm
@@ -179,12 +179,12 @@ jobs:
       contents: write
     steps:
       - name: Download .deb package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: cinectl-deb
           path: dist
       - name: Download .rpm package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: cinectl-rpm
           path: dist
