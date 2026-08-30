@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    container: rust:1-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup show
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  firmware:
+    name: Build firmware
+    runs-on: ubuntu-latest
+    container: rust:1-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        working-directory: firmware
+        run: rustup show
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware
+      - name: Build firmware
+        working-directory: firmware
+        run: cargo build --release
+
+  cinectl-linux:
+    name: Build cinectl (Linux)
+    runs-on: ubuntu-latest
+    container: rust:1-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        run: apt-get update && apt-get install -y pkg-config libudev-dev
+      - name: Install pinned toolchain
+        run: rustup show
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Build cinectl
+        run: cargo build -p cinectl --release
+
+  cinectl-macos:
+    name: Build cinectl (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup show
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Build cinectl
+        run: cargo build -p cinectl --release
