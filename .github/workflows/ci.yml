@@ -10,6 +10,13 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Every job here runs in a container, where GitHub Actions defaults `run:`
+# steps to `sh` rather than `bash` (e.g. dash on Debian, which lacks
+# `source`), unlike on a bare runner. Force bash everywhere for consistency.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   fmt:
     name: rustfmt
