@@ -45,10 +45,6 @@ To only build, without a probe connected:
 cargo build --release
 ```
 
-Build artifacts land in `~/Downloads/CargoBuild`, not `./target` — that's set
-in the user's global `~/.cargo/config.toml`, not something specific to this
-project.
-
 ## Flashing without a debug probe (BOOTSEL/UF2)
 
 The RP2040 has a built-in USB bootloader, so a probe isn't strictly required

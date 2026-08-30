@@ -105,9 +105,7 @@ targets `thumbv6m-none-eabi` (Raspberry Pi Pico / RP2040), using
 `firmware/.cargo/config.toml`. That config is scoped to the `firmware/`
 directory — cargo doesn't pick it up for `-p`/`--workspace` invocations from
 the repo root — so a bare `cargo build`/`check` from the root builds
-`cinectl` instead (the workspace's `default-members`), not firmware. Build
-artifacts land in `~/Downloads/CargoBuild`, not `./target` — that's the
-user's global `~/.cargo/config.toml`, not something to override.
+`cinectl` instead (the workspace's `default-members`), not firmware.
 
 ## Storage
 
