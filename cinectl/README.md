@@ -38,3 +38,4 @@ relies on `systemd-logind`'s seat-based ACLs (`TAG+="uaccess"`), which
 covers every mainstream desktop distro; on a non-systemd system, replace
 that tag with a `GROUP="plugdev", MODE="0660"` line matching your distro's
 convention instead.
+
