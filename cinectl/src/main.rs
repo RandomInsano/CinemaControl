@@ -32,7 +32,12 @@ enum Command {
     /// Read the current PSU telemetry.
     GetPsu,
     /// Stream brightness and PSU updates as they change, until interrupted.
-    Watch,
+    Watch {
+        /// Print one combined line (the latest of all three values) on every
+        /// update, instead of a separate line per interface that changed.
+        #[arg(short, long)]
+        combined: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -57,6 +62,6 @@ fn main() -> Result<()> {
         Command::GetBrightness => commands::get_brightness(&api, board),
         Command::SetBrightness { value } => commands::set_brightness(&api, board, value),
         Command::GetPsu => commands::get_psu(&api, board),
-        Command::Watch => commands::watch(&api, board),
+        Command::Watch { combined } => commands::watch(&api, board, combined),
     }
 }
