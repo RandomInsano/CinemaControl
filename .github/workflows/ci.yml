@@ -43,16 +43,25 @@ jobs:
     name: Build cinectl (Linux)
     runs-on: ubuntu-latest
     container: rust:1-bookworm
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      description: ${{ steps.metadata.outputs.description }}
     steps:
       - uses: actions/checkout@v6
       - name: Install Linux dependencies
-        run: apt-get update && apt-get install -y pkg-config libudev-dev
+        run: apt-get update && apt-get install -y pkg-config libudev-dev jq
       - name: Install pinned toolchain
         run: rustup show
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Build cinectl
         run: cargo build -p cinectl --release
+      - name: Extract package metadata
+        id: metadata
+        run: |
+          source cinectl/packaging/cargo-metadata.sh
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "description=$DESCRIPTION" >> "$GITHUB_OUTPUT"
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
@@ -71,8 +80,8 @@ jobs:
       - name: Build cinectl
         run: cargo build -p cinectl --release
 
-  package:
-    name: Build .deb/.rpm packages
+  package-deb:
+    name: Build .deb package
     needs: cinectl-linux
     runs-on: ubuntu-latest
     container: rust:1-bookworm
@@ -88,21 +97,44 @@ jobs:
       - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y libudev1 jq \
-            debhelper dpkg-dev fakeroot rpm
-      - name: Install pinned toolchain
-        run: rustup show
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+          apt-get install -y build-essential libudev1 \
+            debhelper dpkg-dev fakeroot
       - name: Build .deb package
+        env:
+          VERSION: ${{ needs.cinectl-linux.outputs.version }}
+          DESCRIPTION: ${{ needs.cinectl-linux.outputs.description }}
         run: |
           bash cinectl/packaging/gen-debian-metadata.sh
           (cd cinectl/packaging && dpkg-buildpackage -us -uc -b)
           mkdir -p dist
           mv cinectl/cinectl_*.deb dist/
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: cinectl-deb
+          path: dist/*.deb
+
+  package-rpm:
+    name: Build .rpm package
+    needs: cinectl-linux
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download cinectl binary
+        uses: actions/download-artifact@v4
+        with:
+          name: cinectl-linux-binary
+          path: target/release
+      - name: Restore executable bit
+        run: chmod +x target/release/cinectl
+      - name: Install build dependencies
+        run: dnf install -y rpm-build binutils
       - name: Build .rpm package
+        env:
+          VERSION: ${{ needs.cinectl-linux.outputs.version }}
+          DESCRIPTION: ${{ needs.cinectl-linux.outputs.description }}
         run: |
-          source cinectl/packaging/cargo-metadata.sh
           mkdir -p "$HOME/rpmbuild"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
           rpmbuild -bb \
             --define "version $VERSION" \
@@ -113,24 +145,29 @@ jobs:
             cinectl/packaging/cinectl.spec
           mkdir -p dist
           find "$HOME/rpmbuild/RPMS" -name '*.rpm' -exec mv {} dist/ \;
-      - name: Upload packages
+      - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: cinectl-packages
-          path: dist/*
+          name: cinectl-rpm
+          path: dist/*.rpm
 
   release:
     name: Publish release
-    needs: package
+    needs: [package-deb, package-rpm]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download packages
+      - name: Download .deb package
         uses: actions/download-artifact@v4
         with:
-          name: cinectl-packages
+          name: cinectl-deb
+          path: dist
+      - name: Download .rpm package
+        uses: actions/download-artifact@v4
+        with:
+          name: cinectl-rpm
           path: dist
       - name: Publish GitHub release
         env:
