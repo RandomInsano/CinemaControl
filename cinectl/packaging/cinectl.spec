@@ -9,19 +9,16 @@ Summary:        %{?summary}%{!?summary:Host-side CLI for CinemaControl boards}
 License:        MIT
 URL:            https://github.com/RandomInsano/CinemaControl
 
-BuildRequires:  cargo, rust, pkgconfig(libudev)
 Requires:       systemd-udev
 
-# Built straight from the workspace passed in via `--define "workspace_dir
-# ..."` rather than a Source0/%prep tarball round trip: this spec only ever
-# runs from CI against a git checkout, not a Fedora-style SRPM rebuild.
+# %{workspace_dir}/target/release/cinectl is expected to already be built
+# (by the cinectl-linux CI job, downloaded into place before rpmbuild runs)
+# rather than compiled by this spec, so there's no %prep/%build here — a
+# real Fedora-style SRPM rebuild would need to add cargo/rust BuildRequires
+# and a %build section invoking `cargo build --release -p cinectl` itself.
 
 %description
 %{?description}%{!?description:Host-side CLI for CinemaControl boards, talking to the firmware over USB HID.}
-
-%build
-cd %{workspace_dir}
-cargo build --release -p cinectl
 
 %install
 install -Dm755 %{workspace_dir}/target/release/cinectl %{buildroot}%{_bindir}/cinectl

@@ -53,6 +53,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Build cinectl
         run: cargo build -p cinectl --release
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: cinectl-linux-binary
+          path: target/release/cinectl
 
   cinectl-macos:
     name: Build cinectl (macOS)
@@ -68,14 +73,22 @@ jobs:
 
   package:
     name: Build .deb/.rpm packages
+    needs: cinectl-linux
     runs-on: ubuntu-latest
     container: rust:1-bookworm
     steps:
       - uses: actions/checkout@v6
+      - name: Download cinectl binary
+        uses: actions/download-artifact@v4
+        with:
+          name: cinectl-linux-binary
+          path: target/release
+      - name: Restore executable bit
+        run: chmod +x target/release/cinectl
       - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y pkg-config libudev-dev jq \
+          apt-get install -y libudev1 jq \
             debhelper dpkg-dev fakeroot rpm
       - name: Install pinned toolchain
         run: rustup show
