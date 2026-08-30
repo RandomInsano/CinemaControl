@@ -1,0 +1,15 @@
+Source: cinectl
+Section: utils
+Priority: optional
+Maintainer: Edwin Amsler <EdwinGuy@GMail.com>
+Build-Depends: debhelper-compat (= 13), libudev1
+Standards-Version: 4.7.0
+Homepage: https://github.com/RandomInsano/CinemaControl
+
+Package: cinectl
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: @DESCRIPTION@
+ cinectl talks to a CinemaControl board over USB HID via hidapi: list
+ connected boards, get or set backlight brightness, read PSU telemetry,
+ or watch for live updates.

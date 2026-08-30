@@ -25,9 +25,10 @@ external headers needed).
 ### Linux device permissions
 
 Linux restricts raw HID device access (`/dev/hidraw*`) to root by default.
-Install [`99-cinemacontrol.rules`](99-cinemacontrol.rules) to
-`/etc/udev/rules.d/` so a logged-in user can access the board without
-`sudo`:
+The `.deb`/`.rpm` packages install [`99-cinemacontrol.rules`](99-cinemacontrol.rules)
+to `/usr/lib/udev/rules.d/` automatically, reloading udev on install/removal.
+Building from source instead, install it to `/etc/udev/rules.d/` yourself so
+a logged-in user can access the board without `sudo`:
 
     sudo cp 99-cinemacontrol.rules /etc/udev/rules.d/
     sudo udevadm control --reload-rules

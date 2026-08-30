@@ -2,6 +2,8 @@
 name = "cinectl"
 version = "0.1.0"
 edition = "2024"
+description = "Host-side CLI for CinemaControl boards, talking to the firmware over USB HID."
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0.104"

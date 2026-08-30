@@ -1,0 +1,16 @@
+#!/usr/bin/make -f
+# target/release/cinectl is expected to already exist (built by the
+# cinectl-linux CI job and downloaded into place) rather than compiled
+# here, so every dh_auto_* step below is a no-op except the plain dh_install
+# (via debian/cinectl.install) that copies it into the package.
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+
+override_dh_auto_build:
+
+override_dh_auto_test:
+
+override_dh_auto_install:
