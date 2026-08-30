@@ -124,7 +124,7 @@ pub fn watch(api: &HidApi, board: &Board, combined: bool) -> Result<()> {
 fn watch_separate(rx: mpsc::Receiver<Update>) -> Result<()> {
     for update in rx {
         match update {
-            Update::Brightness(v) => println!("brightness: {v}"),
+            Update::Brightness(v) => println!("brightness: {v:4}"),
             Update::Power(p) => println!("power: {p}"),
             Update::Thermal(t) => println!("thermal: {t}"),
             Update::Error(e) => println!("{e}"),
@@ -140,7 +140,7 @@ fn watch_combined(api: &HidApi, board: &Board, rx: mpsc::Receiver<Update>) -> Re
     let mut brightness = read_brightness(api, board)?;
     let mut power = read_power(api, board)?;
     let mut thermal = read_thermal(api, board)?;
-    println!("brightness: {brightness}  {power}  {thermal}");
+    println!("brightness: {brightness:4}  {power}  {thermal}");
 
     for update in rx {
         match update {
@@ -152,7 +152,7 @@ fn watch_combined(api: &HidApi, board: &Board, rx: mpsc::Receiver<Update>) -> Re
                 continue;
             }
         }
-        println!("brightness: {brightness}  {power}  {thermal}");
+        println!("brightness: {brightness:4}  {power}  {thermal}");
     }
     Ok(())
 }
