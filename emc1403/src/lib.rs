@@ -22,6 +22,7 @@ pub use regs::Register;
 
 use embedded_hal_async::delay::DelayNs;
 use embedded_hal_async::i2c::I2c;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 /// Fixed 7-bit SMBus addresses (datasheet S1) — the part has no address
 /// pin, so which of these four applies is set at the factory by order
@@ -48,7 +49,12 @@ pub struct DeviceId {
 }
 
 /// CONV\[3:0\] field of the Conversion Rate register (0x04/0x0A, mirrored).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Variant order doubles as the raw encoding (`PerSec1_16` = 0 .. `PerSec64`
+/// = 0xA), so [`IntoPrimitive`] and [`TryFromPrimitive`] derive `to_raw`/
+/// `from_raw` from the discriminants instead of a hand-mirrored match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
+#[repr(u8)]
 pub enum ConversionRate {
     PerSec1_16,
     PerSec1_8,
@@ -65,37 +71,12 @@ pub enum ConversionRate {
 
 impl ConversionRate {
     fn from_raw(raw: u8) -> Self {
-        match raw & 0x0F {
-            0x0 => Self::PerSec1_16,
-            0x1 => Self::PerSec1_8,
-            0x2 => Self::PerSec1_4,
-            0x3 => Self::PerSec1_2,
-            0x4 => Self::PerSec1,
-            0x5 => Self::PerSec2,
-            0x6 => Self::PerSec4,
-            0x7 => Self::PerSec8,
-            0x8 => Self::PerSec16,
-            0x9 => Self::PerSec32,
-            0xA => Self::PerSec64,
-            // 0xB..=0xF are undefined and fall back to 1/sec (datasheet S7).
-            _ => Self::PerSec1,
-        }
+        // 0xB..=0xF are undefined and fall back to 1/sec (datasheet S7).
+        Self::try_from(raw & 0x0F).unwrap_or(Self::PerSec1)
     }
 
     fn to_raw(self) -> u8 {
-        match self {
-            Self::PerSec1_16 => 0x0,
-            Self::PerSec1_8 => 0x1,
-            Self::PerSec1_4 => 0x2,
-            Self::PerSec1_2 => 0x3,
-            Self::PerSec1 => 0x4,
-            Self::PerSec2 => 0x5,
-            Self::PerSec4 => 0x6,
-            Self::PerSec8 => 0x7,
-            Self::PerSec16 => 0x8,
-            Self::PerSec32 => 0x9,
-            Self::PerSec64 => 0xA,
-        }
+        self.into()
     }
 
     /// Time between conversions at this rate, in microseconds — the plain

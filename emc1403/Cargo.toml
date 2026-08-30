@@ -7,3 +7,4 @@ description = "Driver for the Microchip EMC1403/EMC1404 SMBus temperature sensor
 [dependencies]
 bitflags = "2.6.0"
 embedded-hal-async = "1.0.0"
+num_enum = { version = "0.7.6", default-features = false }
