@@ -2,6 +2,9 @@
 name = "cinectl"
 version = "0.1.0"
 edition = "2024"
+description = "Host-side CLI for CinemaControl boards, talking to the firmware over USB HID."
+license = "MIT"
+authors = ["Edwin Amsler <EdwinGuy@GMail.com>"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -11,3 +14,27 @@ protocol = { path = "../protocol" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 hidapi = { version = "2.6.6", features = ["macos-shared-device"] }
+
+[package.metadata.deb]
+maintainer = "Edwin Amsler <EdwinGuy@GMail.com>"
+copyright = "2026, Edwin Amsler <EdwinGuy@GMail.com>"
+license-file = ["../LICENSE", "4"]
+extended-description = """\
+Host-side CLI for CinemaControl boards, talking to the firmware over USB HID \
+via hidapi: list connected boards, get/set brightness, read PSU telemetry, \
+or watch for live updates."""
+depends = "$auto"
+section = "utils"
+priority = "optional"
+assets = [
+    { source = "target/release/cinectl", dest = "usr/bin/", mode = "755" },
+    { source = "99-cinemacontrol.rules", dest = "usr/lib/udev/rules.d/99-cinemacontrol.rules", mode = "644" },
+    { source = "README.md", dest = "usr/share/doc/cinectl/README.md", mode = "644" },
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/cinectl", dest = "/usr/bin/cinectl", mode = "755" },
+    { source = "99-cinemacontrol.rules", dest = "/usr/lib/udev/rules.d/99-cinemacontrol.rules", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/cinectl/README.md", mode = "644", doc = true },
+]
