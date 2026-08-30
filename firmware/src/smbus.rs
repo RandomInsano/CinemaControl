@@ -24,7 +24,7 @@ use defmt::warn;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::watch::Watch;
-use embassy_time::{Delay, Duration, Timer};
+use embassy_time::{Delay, Duration, Timer, with_timeout};
 use emc1403::{Channel, ConversionRate, Emc1403};
 use ina219::Ina219;
 use mcu_hal::i2c;
@@ -49,6 +49,18 @@ const EMC1403_RATE: ConversionRate = ConversionRate::PerSec4;
 /// poll a conversion that's a few microseconds from done but not quite
 /// there yet.
 const REFRESH_MARGIN_MS: u64 = 14;
+
+/// Applied to a whole read cycle (every i2c operation [`try_read_power_rail`]
+/// or [`try_read_thermal`] makes in one pass), not each individual
+/// transaction. The RP2040's SMBus lines get their pull-ups from the PSU's
+/// own secondary-side rail (see `WIRING.md`) — a rail that, unlike originally
+/// assumed, can drop out independently of the RP2040 (which stays up on USB
+/// power). `embassy-rp`'s I2C driver has no timeout of its own, so a PSU
+/// power-down mid-transaction (bus lines left floating instead of pulled up)
+/// can otherwise hang the task's `.await` forever. Sized generously over
+/// actual bus traffic per cycle (a handful of few-byte transfers at 100kHz,
+/// comfortably under 10ms) while still being far short of "forever".
+const I2C_CYCLE_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// The shortest interval safe to poll a device without re-reading a
 /// still-in-progress conversion, plus [`REFRESH_MARGIN_MS`]. `conversion_us`
@@ -137,30 +149,6 @@ pub async fn ina219_task(bus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>)
         INA219_CALIBRATION_RAW,
     );
 
-    // The INA219 shares this board's power domain with the RP2040 (it's
-    // not on a rail that can drop out from under a still-running
-    // controller), so there's no independent-reset scenario to self-heal
-    // from — Configuration/Calibration only need setting once, at startup,
-    // matching the datasheet's own init-once-per-reset model (S8.6) rather
-    // than rewriting them every read.
-    let config = ina219::Configuration {
-        bus_adc: INA219_PRECISION,
-        shunt_adc: INA219_PRECISION,
-        ..ina219::Configuration::default()
-    };
-    if let Err(e) = sensor.set_configuration(config).await {
-        warn!(
-            "INA219 set_configuration failed: {} — falling back to its power-on default precision",
-            defmt::Debug2Format(&e)
-        );
-    }
-    if let Err(e) = sensor.calibrate().await {
-        warn!(
-            "INA219 calibration write failed: {} — current/power will read 0 until reboot",
-            defmt::Debug2Format(&e)
-        );
-    }
-
     // Doubled for BADC+SADC — Configuration.MODE here is shunt+bus
     // continuous, which converts both every cycle (datasheet S4.1: total
     // conversion time per cycle is roughly BADC time + SADC time, not the
@@ -174,8 +162,8 @@ pub async fn ina219_task(bus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>)
     let mut last_sent = PowerTelemetry::default();
 
     loop {
-        match try_read_power_rail(&mut sensor).await {
-            Ok((voltage_mv, current_ma, power_mw)) => {
+        match with_timeout(I2C_CYCLE_TIMEOUT, try_read_power_rail(&mut sensor)).await {
+            Ok(Ok((voltage_mv, current_ma, power_mw))) => {
                 let telemetry = PowerTelemetry {
                     voltage_mv,
                     current_ma,
@@ -186,7 +174,8 @@ pub async fn ina219_task(bus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>)
                     last_sent = telemetry;
                 }
             }
-            Err(e) => warn!("INA219 power rail read failed: {}", defmt::Debug2Format(&e)),
+            Ok(Err(e)) => warn!("INA219 power rail read failed: {}", defmt::Debug2Format(&e)),
+            Err(_) => warn!("INA219 power rail read timed out — PSU likely powered down"),
         }
         Timer::after(refresh_interval).await;
     }
@@ -208,10 +197,26 @@ impl From<ina219::Error<i2c::Error>> for PowerRailError {
     }
 }
 
+/// Re-applies Configuration/Calibration every cycle rather than once at task
+/// startup: unlike the RP2040, the INA219 lives on the PSU's own
+/// secondary-side rail (see `WIRING.md`) and can be independently
+/// power-cycled, which resets both to power-on defaults (Calibration doesn't
+/// survive a reset — see the `ina219` crate's [`Ina219::calibrate`] doc
+/// comment) without the RP2040 itself ever rebooting to redo them. Same
+/// self-healing rationale as [`try_read_thermal`]'s re-probe/re-configure.
+///
 /// Returns (voltage_mv, current_ma, power_mw).
 async fn try_read_power_rail(
     sensor: &mut Ina219<SharedI2c>,
 ) -> Result<(u16, i16, u32), PowerRailError> {
+    let config = ina219::Configuration {
+        bus_adc: INA219_PRECISION,
+        shunt_adc: INA219_PRECISION,
+        ..ina219::Configuration::default()
+    };
+    sensor.set_configuration(config).await?;
+    sensor.calibrate().await?;
+
     let voltage = sensor.bus_voltage().await?;
     if voltage.overflow {
         return Err(PowerRailError::Overflow);
@@ -239,8 +244,8 @@ pub async fn emc1403_task(bus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>
     let mut last_sent = ThermalTelemetry::default();
 
     loop {
-        match try_read_thermal(bus).await {
-            Ok((internal_decic, external1_decic)) => {
+        match with_timeout(I2C_CYCLE_TIMEOUT, try_read_thermal(bus)).await {
+            Ok(Ok((internal_decic, external1_decic))) => {
                 let telemetry = ThermalTelemetry {
                     internal_decic,
                     external1_decic,
@@ -250,7 +255,8 @@ pub async fn emc1403_task(bus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>
                     last_sent = telemetry;
                 }
             }
-            Err(e) => warn!("EMC1403 thermal read failed: {}", defmt::Debug2Format(&e)),
+            Ok(Err(e)) => warn!("EMC1403 thermal read failed: {}", defmt::Debug2Format(&e)),
+            Err(_) => warn!("EMC1403 thermal read timed out — PSU likely powered down"),
         }
         Timer::after(refresh_interval).await;
     }
