@@ -91,7 +91,7 @@ jobs:
     name: Build .deb package
     needs: cinectl-linux
     runs-on: ubuntu-latest
-    container: debian:latest
+    container: ubuntu:latest
     steps:
       - uses: actions/checkout@v6
       - name: Download cinectl binary
@@ -115,6 +115,12 @@ jobs:
           (cd cinectl/packaging && dpkg-buildpackage -us -uc -b)
           mkdir -p dist
           mv cinectl/cinectl_*.deb dist/
+      - name: Install .deb package
+        run: apt-get install -y ./dist/*.deb
+      - name: Verify cinectl --help
+        run: cinectl --help
+      - name: Verify cinectl list
+        run: cinectl list
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
@@ -152,6 +158,12 @@ jobs:
             cinectl/packaging/cinectl.spec
           mkdir -p dist
           find "$HOME/rpmbuild/RPMS" -name '*.rpm' -exec mv {} dist/ \;
+      - name: Install .rpm package
+        run: dnf install -y --nogpgcheck ./dist/*.rpm
+      - name: Verify cinectl --help
+        run: cinectl --help
+      - name: Verify cinectl list
+        run: cinectl list
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
