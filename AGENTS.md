@@ -1,8 +1,9 @@
 # Agent notes for CinemaControl2
 
 This is a Cargo workspace centered on two crates: `firmware/` (the `no_std`
-RP2040 firmware) and `cinectl/` (a host-side CLI, used on macOS so far, that
-talks to it over USB HID — set/query/watch brightness and PSU telemetry).
+RP2040 firmware) and `cinectl/` (a host-side CLI, developed on macOS but
+also buildable on Linux, that talks to it over USB HID — set/query/watch
+brightness and PSU telemetry).
 `protocol/` is a small `no_std` crate holding everything both of them need to
 agree on: the USB IDs and report lengths (`VENDOR_ID`/`PRODUCT_ID`,
 `MAX_BRIGHTNESS`, `*_REPORT_LEN`), the `PowerTelemetry`/`ThermalTelemetry`
@@ -143,11 +144,17 @@ host treat it like one (e.g. offer battery-loss shutdown behavior).
 
 ## cinectl (host CLI)
 
-`cinectl/` is a `std` binary crate, built and used on macOS so far, that
-talks to the firmware over USB HID: `cinectl
-list|get-brightness|set-brightness|get-psu|watch`, via `hidapi`. It depends
-on `protocol/` for everything covered above; `cinectl/src/report.rs` now
-just re-exports `protocol`'s telemetry structs plus the handful of
+`cinectl/` is a `std` binary crate, developed on macOS but also buildable on
+Linux (see `cinectl/README.md` for Linux build prerequisites and the udev
+rule needed for non-root device access — `cinectl/99-cinemacontrol.rules`),
+that talks to the firmware over USB HID: `cinectl
+list|get-brightness|set-brightness|get-psu|watch`, via `hidapi`. The
+`hidapi` dependency's `macos-shared-device` feature is scoped to a
+`[target.'cfg(target_os = "macos")'.dependencies]` table in
+`cinectl/Cargo.toml`, not the main `[dependencies]` table, since it only
+affects macOS code paths inside `hidapi` itself. `cinectl` depends on
+`protocol/` for everything covered above; `cinectl/src/report.rs` now just
+re-exports `protocol`'s telemetry structs plus the handful of
 brightness/report-length helpers that don't belong in a `no_std` crate
 (`brightness_from_bytes`, `brightness_feature_report`).
 
