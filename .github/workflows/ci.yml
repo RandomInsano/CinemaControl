@@ -91,7 +91,7 @@ jobs:
     name: Build .deb package
     needs: cinectl-linux
     runs-on: ubuntu-latest
-    container: rust:1-bookworm
+    container: debian:latest
     steps:
       - uses: actions/checkout@v6
       - name: Download cinectl binary
