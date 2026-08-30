@@ -11,14 +11,17 @@ URL:            https://github.com/RandomInsano/CinemaControl
 
 Requires:       systemd-udev
 
-# %{workspace_dir}/target/release/cinectl is expected to already be built
+# %%{workspace_dir}/target/release/cinectl is expected to already be built
 # (by the cinectl-linux CI job, downloaded into place before rpmbuild runs)
-# rather than compiled by this spec, so there's no %prep/%build here — a
+# rather than compiled by this spec, so there's no %%prep/%%build here — a
 # real Fedora-style SRPM rebuild would need to add cargo/rust BuildRequires
-# and a %build section invoking `cargo build --release -p cinectl` itself.
+# and a %%build section invoking `cargo build --release -p cinectl` itself.
 
+# Named pkg_description, not description: `--define "description ..."`
+# would shadow rpm's own %description section marker, since macro
+# expansion runs before rpm recognizes section headers.
 %description
-%{?description}%{!?description:Host-side CLI for CinemaControl boards, talking to the firmware over USB HID.}
+%{?pkg_description}%{!?pkg_description:Host-side CLI for CinemaControl boards, talking to the firmware over USB HID.}
 
 %install
 install -Dm755 %{workspace_dir}/target/release/cinectl %{buildroot}%{_bindir}/cinectl

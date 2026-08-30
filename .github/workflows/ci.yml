@@ -146,7 +146,7 @@ jobs:
           rpmbuild -bb \
             --define "version $VERSION" \
             --define "summary $DESCRIPTION" \
-            --define "description $DESCRIPTION" \
+            --define "pkg_description $DESCRIPTION" \
             --define "workspace_dir $PWD" \
             --define "changelog_date $(date '+%a %b %d %Y')" \
             cinectl/packaging/cinectl.spec
