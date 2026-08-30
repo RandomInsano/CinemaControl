@@ -52,7 +52,7 @@ impl fmt::Display for PowerTelemetry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{:.3} V  {:.3} A  {:.3} W",
+            "{:.3} V  {:+.3} A  {:.3} W",
             f32::from(self.voltage_mv) / 1000.0,
             f32::from(self.current_ma) / 1000.0,
             self.power_mw as f32 / 1000.0,
