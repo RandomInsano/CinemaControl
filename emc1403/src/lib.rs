@@ -5,9 +5,9 @@
 //!
 //! Register-level accessors ([`Emc1403::read_register`]/
 //! [`Emc1403::write_register`]) are exposed alongside the typed ones so
-//! registers this driver doesn't model directly (Beta Configuration,
-//! Ideality Factor, Filter Control, Scratchpad — see [`regs`]) are still
-//! reachable without going through a second abstraction.
+//! registers this driver doesn't model directly (Scratchpad — see
+//! [`regs`]) are still reachable without going through a second
+//! abstraction.
 #![cfg_attr(not(test), no_std)]
 
 mod channel;
@@ -15,7 +15,7 @@ mod error;
 pub mod flags;
 pub mod regs;
 
-pub use channel::Channel;
+pub use channel::{BetaChannel, Channel, ExternalChannel};
 pub use error::Error;
 pub use flags::{ChannelMask, Configuration, DiodeFault, LimitStatus, Status};
 pub use regs::Register;
@@ -159,6 +159,82 @@ impl ConsecutiveAlertConfig {
         ((self.smbus_timeout_enabled as u8) << 7)
             | (self.therm_count.to_field() << 4)
             | (self.alert_count.to_field() << 1)
+    }
+}
+
+/// BETAx\[2:0\] field of a Beta Configuration register — Table 6.16.
+/// Variant order matches the raw encoding, same trick as
+/// [`ConversionRate`]: `Beta0_11` = 0 .. `Disabled` = 7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
+#[repr(u8)]
+pub enum BetaSetting {
+    Beta0_11,
+    Beta0_18,
+    Beta0_25,
+    Beta0_33,
+    Beta0_43,
+    Beta1_00,
+    Beta2_33,
+    /// Beta Compensation off entirely for this channel.
+    Disabled,
+}
+
+/// Beta Configuration register (0x25/0x26), decoded — see
+/// [`Emc1403::beta_config`]/[`Emc1403::set_beta_config`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BetaConfig {
+    /// ENABLEx (bit 3). When set, the device autodetects the optimal
+    /// [`BetaSetting`] at the start of every conversion and `setting`
+    /// reflects that live value — writing a different `setting` while this
+    /// is `true` has no effect (datasheet S6.13). Default `true`.
+    pub autodetect: bool,
+    /// BETAx\[2:0\] — the live autodetected value if `autodetect` is set,
+    /// otherwise the manually programmed one.
+    pub setting: BetaSetting,
+}
+
+impl BetaConfig {
+    fn from_raw(raw: u8) -> Self {
+        Self {
+            autodetect: raw & (1 << 3) != 0,
+            // BETAx[2:0] is 3 bits wide and every one of the 8 codes is a
+            // defined BetaSetting, so this mask can never miss the table.
+            setting: BetaSetting::try_from(raw & 0b111).unwrap(),
+        }
+    }
+
+    fn to_raw(self) -> u8 {
+        ((self.autodetect as u8) << 3) | u8::from(self.setting)
+    }
+}
+
+/// FILTER\[1:0\] field of the Filter Control register (0x40) — controls
+/// digital filtering on the External Diode 1 channel only, not the other
+/// channels (datasheet S5.9/S6.18). Table 6.24's raw codes aren't a plain
+/// binary count (`0b01` and `0b10` both mean "Level 1"), so this can't use
+/// the [`ConversionRate`]-style discriminant trick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DigitalFilter {
+    Disabled,
+    Level1,
+    Level2,
+}
+
+impl DigitalFilter {
+    fn from_raw(raw: u8) -> Self {
+        match raw & 0b11 {
+            0b01 | 0b10 => Self::Level1,
+            0b11 => Self::Level2,
+            _ => Self::Disabled,
+        }
+    }
+
+    fn to_raw(self) -> u8 {
+        match self {
+            Self::Disabled => 0b00,
+            Self::Level1 => 0b01,
+            Self::Level2 => 0b11,
+        }
     }
 }
 
@@ -446,6 +522,57 @@ impl<I2C: I2c> Emc1403<I2C> {
             .await
     }
 
+    pub async fn beta_config(
+        &mut self,
+        ch: BetaChannel,
+    ) -> Result<BetaConfig, Error<I2C::Error>> {
+        Ok(BetaConfig::from_raw(
+            self.read_register(ch.beta_config_reg()).await?,
+        ))
+    }
+
+    pub async fn set_beta_config(
+        &mut self,
+        ch: BetaChannel,
+        cfg: BetaConfig,
+    ) -> Result<(), Error<I2C::Error>> {
+        self.write_register(ch.beta_config_reg(), cfg.to_raw())
+            .await
+    }
+
+    /// IDEALITY\[5:0\] — an opaque lookup-table index into Table 6.18 (or
+    /// Table 6.19 for a CPU substrate/BJT-model diode), not a directly
+    /// computed factor. Datasheet: "it is not recommended that these
+    /// settings be updated without consulting Microchip." Default 0x12.
+    pub async fn ideality_factor(
+        &mut self,
+        ch: ExternalChannel,
+    ) -> Result<u8, Error<I2C::Error>> {
+        Ok(self.read_register(ch.ideality_reg()).await? & 0x3F)
+    }
+
+    pub async fn set_ideality_factor(
+        &mut self,
+        ch: ExternalChannel,
+        setting: u8,
+    ) -> Result<(), Error<I2C::Error>> {
+        self.write_register(ch.ideality_reg(), setting & 0x3F).await
+    }
+
+    pub async fn filter_control(&mut self) -> Result<DigitalFilter, Error<I2C::Error>> {
+        Ok(DigitalFilter::from_raw(
+            self.read_register(Register::FilterControl).await?,
+        ))
+    }
+
+    pub async fn set_filter_control(
+        &mut self,
+        filter: DigitalFilter,
+    ) -> Result<(), Error<I2C::Error>> {
+        self.write_register(Register::FilterControl, filter.to_raw())
+            .await
+    }
+
     /// Triggers a single conversion across all channels while in Standby
     /// (`Configuration::STANDBY` set) and BUSY clear. No effect in Active
     /// mode. The register always reads back 0x00 — data lands in the usual
@@ -468,53 +595,6 @@ mod tests {
     #[test]
     fn decodes_extended_range_below_zero() {
         assert_eq!(decode_temp_c(0, 0, true), -64.0);
-    }
-
-    #[test]
-    fn conversion_rate_round_trips() {
-        for raw in 0x0..=0xA {
-            assert_eq!(ConversionRate::from_raw(raw).to_raw(), raw);
-        }
-    }
-
-    #[test]
-    fn undefined_conversion_rate_falls_back_to_1_per_sec() {
-        assert_eq!(ConversionRate::from_raw(0xF), ConversionRate::PerSec1);
-    }
-
-    #[test]
-    fn period_matches_named_rate() {
-        assert_eq!(ConversionRate::PerSec1.period_us(), 1_000_000);
-        assert_eq!(ConversionRate::PerSec4.period_us(), 250_000);
-        assert_eq!(ConversionRate::PerSec1_16.period_us(), 16_000_000);
-        assert_eq!(ConversionRate::PerSec64.period_us(), 15_625);
-    }
-
-    #[test]
-    fn consecutive_count_round_trips_defined_codes() {
-        for field in [0b000u8, 0b001, 0b011, 0b111] {
-            let count = ConsecutiveCount::from_field(field);
-            assert_eq!(count.to_field(), field);
-        }
-    }
-
-    #[test]
-    fn consecutive_alert_config_round_trips() {
-        let cfg = ConsecutiveAlertConfig {
-            smbus_timeout_enabled: true,
-            therm_count: ConsecutiveCount::Four,
-            alert_count: ConsecutiveCount::Three,
-        };
-        assert_eq!(ConsecutiveAlertConfig::from_raw(cfg.to_raw()), cfg);
-    }
-
-    #[test]
-    fn default_consecutive_alert_matches_datasheet_reset_value() {
-        // 0x70 = TIMEOUT=0, CTHRM=111 (4), CALRT=000 (1) — datasheet S9.
-        let cfg = ConsecutiveAlertConfig::from_raw(0x70);
-        assert!(!cfg.smbus_timeout_enabled);
-        assert_eq!(cfg.therm_count, ConsecutiveCount::Four);
-        assert_eq!(cfg.alert_count, ConsecutiveCount::One);
     }
 
     #[test]

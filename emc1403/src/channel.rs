@@ -72,3 +72,42 @@ impl Channel {
         }
     }
 }
+
+/// Channels with a Beta Configuration register (datasheet S6.13). The
+/// internal diode has no Beta Compensation concept, and External3 has no
+/// Beta Configuration register at all — only 0x25 (External1) and 0x26
+/// (External2) exist (Table 6.15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BetaChannel {
+    External1,
+    External2,
+}
+
+impl BetaChannel {
+    pub(crate) fn beta_config_reg(self) -> Register {
+        match self {
+            Self::External1 => Register::External1BetaConfig,
+            Self::External2 => Register::External2BetaConfig,
+        }
+    }
+}
+
+/// Channels with an External Diode Ideality Factor register (datasheet
+/// S6.14) — every external diode (0x27/0x28/0x31), but not the internal
+/// one, which has no diode ideality to correct for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalChannel {
+    External1,
+    External2,
+    External3,
+}
+
+impl ExternalChannel {
+    pub(crate) fn ideality_reg(self) -> Register {
+        match self {
+            Self::External1 => Register::External1Ideality,
+            Self::External2 => Register::External2Ideality,
+            Self::External3 => Register::External3Ideality,
+        }
+    }
+}

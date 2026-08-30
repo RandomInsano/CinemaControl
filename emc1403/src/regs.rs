@@ -7,8 +7,7 @@
 /// [`crate::Emc1403::write_register`] take `impl Into<u8>`, so a plain
 /// `u8` still works for anything not listed here; this exists so the
 /// common case can't typo an address, and so registers this driver doesn't
-/// give a typed accessor to (Beta Configuration, Ideality Factor, Filter
-/// Control, Scratchpad) are still nameable.
+/// give a typed accessor to (Scratchpad) are still nameable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Register {
