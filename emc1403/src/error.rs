@@ -6,7 +6,10 @@ pub enum Error<E> {
     /// variant (not folded into a generic bus error) because this bus can
     /// also carry other devices at other addresses — a wrong-address bug
     /// should fail loudly rather than return plausible-looking garbage.
-    UnexpectedDevice { product: u8, manufacturer: u8 },
+    UnexpectedDevice {
+        product: u8,
+        manufacturer: u8,
+    },
 }
 
 impl<E> From<E> for Error<E> {

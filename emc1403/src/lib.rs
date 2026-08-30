@@ -405,7 +405,8 @@ impl<I2C: I2c> Emc1403<I2C> {
     }
 
     pub async fn set_configuration(&mut self, cfg: Configuration) -> Result<(), Error<I2C::Error>> {
-        self.write_register(Register::Configuration, cfg.bits()).await
+        self.write_register(Register::Configuration, cfg.bits())
+            .await
     }
 
     async fn encode_limit(&mut self, whole_degrees_c: i16) -> Result<u8, Error<I2C::Error>> {
@@ -475,7 +476,8 @@ impl<I2C: I2c> Emc1403<I2C> {
     /// A plain degree delta shared by every THERM limit, not itself
     /// RANGE-encoded (datasheet S8).
     pub async fn set_therm_hysteresis_c(&mut self, degrees_c: u8) -> Result<(), Error<I2C::Error>> {
-        self.write_register(Register::ThermHysteresis, degrees_c).await
+        self.write_register(Register::ThermHysteresis, degrees_c)
+            .await
     }
 
     pub async fn therm_hysteresis_c(&mut self) -> Result<u8, Error<I2C::Error>> {
@@ -503,7 +505,8 @@ impl<I2C: I2c> Emc1403<I2C> {
     }
 
     pub async fn set_channel_mask(&mut self, mask: ChannelMask) -> Result<(), Error<I2C::Error>> {
-        self.write_register(Register::ChannelMask, mask.bits()).await
+        self.write_register(Register::ChannelMask, mask.bits())
+            .await
     }
 
     pub async fn consecutive_alert_config(
@@ -522,10 +525,7 @@ impl<I2C: I2c> Emc1403<I2C> {
             .await
     }
 
-    pub async fn beta_config(
-        &mut self,
-        ch: BetaChannel,
-    ) -> Result<BetaConfig, Error<I2C::Error>> {
+    pub async fn beta_config(&mut self, ch: BetaChannel) -> Result<BetaConfig, Error<I2C::Error>> {
         Ok(BetaConfig::from_raw(
             self.read_register(ch.beta_config_reg()).await?,
         ))
@@ -544,10 +544,7 @@ impl<I2C: I2c> Emc1403<I2C> {
     /// Table 6.19 for a CPU substrate/BJT-model diode), not a directly
     /// computed factor. Datasheet: "it is not recommended that these
     /// settings be updated without consulting Microchip." Default 0x12.
-    pub async fn ideality_factor(
-        &mut self,
-        ch: ExternalChannel,
-    ) -> Result<u8, Error<I2C::Error>> {
+    pub async fn ideality_factor(&mut self, ch: ExternalChannel) -> Result<u8, Error<I2C::Error>> {
         Ok(self.read_register(ch.ideality_reg()).await? & 0x3F)
     }
 
