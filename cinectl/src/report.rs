@@ -1,12 +1,9 @@
 //! HID report wire format, mirroring `firmware/src/hid.rs`'s report
-//! descriptors. None of the three interfaces use numbered reports, so
-//! hidapi's feature-report calls still carry a leading Report ID byte
-//! (always 0, per `HidDevice::get_feature_report`/`send_feature_report`'s
-//! convention) while Input reports read via `HidDevice::read` don't.
+//! descriptors. Feature reports carry a leading Report ID byte (always 0);
+//! Input reports read via `HidDevice::read` don't.
 
 use std::fmt;
 
-/// Mirrors `firmware/src/hid.rs::MAX_BRIGHTNESS`.
 pub const MAX_BRIGHTNESS: u16 = 1023;
 
 /// 1 Report ID byte + a 16-bit little-endian brightness value.
@@ -23,12 +20,8 @@ pub fn brightness_feature_report(value: u16) -> [u8; BRIGHTNESS_FEATURE_REPORT_L
     [0, lo, hi]
 }
 
-/// Matches `firmware/src/smbus.rs::PowerTelemetry`'s field layout and
-/// units — real INA219 reads, calibrated per
-/// `firmware/src/smbus.rs::INA219_CALIBRATION_RAW`.
 pub struct PowerTelemetry {
     pub voltage_mv: u16,
-    /// Signed — the INA219 is bidirectional.
     pub current_ma: i16,
     pub power_mw: u32,
 }
@@ -60,9 +53,6 @@ impl fmt::Display for PowerTelemetry {
     }
 }
 
-/// Matches `firmware/src/smbus.rs::ThermalTelemetry`'s field layout and
-/// units — real EMC1403 reads, in tenths of a degree C (Internal Diode,
-/// External Diode 1).
 pub struct ThermalTelemetry {
     pub internal_decic: i16,
     pub external1_decic: i16,

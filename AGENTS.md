@@ -13,12 +13,20 @@ a section says otherwise.
 ## Comments
 
 Keep comments minimal. Don't explain what code does — name things well
-instead. The one deliberate exception: HID report descriptors. Raw HID
-descriptor bytes (`0x05, 0x80, ...`) are unreadable without a byte-by-byte
-gloss of what each item means, so those get commented line-by-line (see
-`HID_REPORT_DESCRIPTOR` in `src/hid.rs`). Everywhere else, a comment should
-only exist to capture a non-obvious *why* (a hardware quirk, a spec
-requirement, a constraint that isn't visible in the code itself).
+instead. Two narrow exceptions, both kept short:
+
+- HID report descriptors: raw descriptor bytes (`0x05, 0x80, ...`) are
+  unreadable without a byte-by-byte gloss of what each item means, so those
+  get commented line-by-line (see `HID_REPORT_DESCRIPTOR` in `src/hid.rs`).
+- Datasheet facts: a register address, calibration constant, or timing value
+  can carry a one-line citation of where it came from (chip, datasheet
+  section, measured value) since that can't be recovered by reading the code.
+
+Nothing else gets a comment — not a hardware quirk, not a design rationale,
+not a "why this and not that," not a note about what an earlier version did.
+If something needs that kind of explaining, it belongs in the commit message,
+not the source. A comment that isn't one of the two exceptions above, or that
+runs past one line, gets deleted rather than kept.
 
 ## Structure (firmware)
 

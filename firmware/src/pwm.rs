@@ -6,8 +6,6 @@ use mcu_hal::pwm::SetDutyCycle;
 use crate::board::Backlight;
 use crate::hid;
 
-/// Seeds the board's backlight PWM with the current [`hid::BRIGHTNESS`].
-/// Ready to be spawned via [`task`].
 pub fn init(mut backlight: Backlight) -> Backlight {
     set_brightness(&mut backlight, hid::BRIGHTNESS.try_get().unwrap());
     backlight

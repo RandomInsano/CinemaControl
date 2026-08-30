@@ -1,11 +1,6 @@
 //! USB HID: VESA/USB Monitor Control Class brightness control, plus two
-//! separate Power Device interfaces for PSU telemetry — one for
-//! voltage/current/power (INA219, calibrated per
-//! `smbus::INA219_CALIBRATION_RAW`), one for temperature (EMC1403). Split
-//! into two interfaces (rather than one combined report) because the two
-//! chips update at very different rates (see `smbus.rs`'s module doc
-//! comment) — a host watching for changes on one shouldn't have to also
-//! wake up every time the other updates.
+//! separate Power Device interfaces for PSU telemetry (voltage/current/power,
+//! temperature).
 
 use defmt::warn;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -22,34 +17,15 @@ use crate::board::UsbDriver;
 use crate::hid_tools::Report;
 use crate::smbus::{POWER_TELEMETRY, THERMAL_TELEMETRY};
 
-/// Current backlight brightness, 0..=1023: both the value (readable
-/// synchronously via `try_get`) and the change notification (awaitable via a
-/// receiver's `changed`) for the HID Feature/Input report and the PWM duty
-/// cycle. Three receivers: the PWM task, the storage task, and the HID Input
-/// report task.
 pub static BRIGHTNESS: Watch<CriticalSectionRawMutex, u16, 3> = Watch::new_with(512);
 
 pub const MAX_BRIGHTNESS: u16 = 1023;
 
-/// Sets the startup brightness restored from flash, same as any other
-/// [`BRIGHTNESS`] update: every receiver's first `changed` fires with this
-/// value. `pwm.rs` and [`hid_report_task`] just reapply it, harmlessly.
-/// `storage.rs` is the one consumer where re-saving it immediately would
-/// matter, but its `save` already no-ops when the value matches what's on
-/// flash — which this always does, since it's the value `storage.rs` itself
-/// just loaded — so no special-casing is needed there either.
 pub fn restore_brightness(value: u16) {
     BRIGHTNESS.sender().send(value.min(MAX_BRIGHTNESS));
 }
 
-/// VESA/USB Monitor Control Class HID report descriptor: a single Monitor
-/// Control application collection (Usage Page 0x80, Usage 0x01) containing a
-/// VESA Virtual Controls Brightness usage (Usage Page 0x82, Usage 0x10, VCP
-/// code 0x10 "Luminance") as both an Input report (so hosts/backlight
-/// drivers that only poll the interrupt IN endpoint see the live value) and
-/// a Feature report (so hosts can Get/Set it directly). This mirrors the
-/// structure real-world implementations (e.g. Apple Studio Display, Linux's
-/// hid_bl VESA VCP backlight driver) match against.
+/// VESA VCP code 0x10 "Luminance", Usage Page 0x82.
 #[rustfmt::skip]
 const MONITOR_REPORT_DESCRIPTOR: &[u8] = &[
     0x05, 0x80,       // Usage Page (Monitor)
@@ -67,14 +43,7 @@ const MONITOR_REPORT_DESCRIPTOR: &[u8] = &[
     0xC0,             // End Collection
 ];
 
-/// HID Power Device report descriptor (Usage Page 0x84, Usage 0x05
-/// "PowerSupply" — deliberately not 0x04 "UPS", since this isn't a
-/// battery-backup device and shouldn't be treated like one), Voltage +
-/// Current + Power only. No Report IDs: it's the only report this interface
-/// has, so the three fields just concatenate into one 8-byte Input and one
-/// 8-byte Feature report. Voltage (unsigned mV), Current (signed mA — the
-/// INA219 is bidirectional), and Power (unsigned mW) are all real INA219
-/// reads, calibrated per `smbus::INA219_CALIBRATION_RAW`.
+/// HID Power Device, Usage Page 0x84, Usage 0x05 "PowerSupply".
 #[rustfmt::skip]
 const POWER_REPORT_DESCRIPTOR: &[u8] = &[
     0x05, 0x84,       // Usage Page (Power Device)
@@ -108,18 +77,7 @@ const POWER_REPORT_DESCRIPTOR: &[u8] = &[
     0xC0,             // End Collection
 ];
 
-/// HID Power Device report descriptor, Temperature only — same Usage Page/
-/// top-level Usage as [`POWER_REPORT_DESCRIPTOR`] (there's no dedicated
-/// "temperature sensor" application usage on this page, and HID doesn't
-/// require distinct interfaces to have distinct top-level usages); `cinectl`
-/// tells the two interfaces apart by USB interface number instead (see
-/// `cinectl/src/device.rs`). No Report IDs: the two Temperature fields
-/// concatenate into one 4-byte Input and one 4-byte Feature report, signed
-/// tenths of a degree C (-40.0 to 150.0), real EMC1403 reads. Both fields
-/// share the same usage (0x36): HID assigns repeated local usage tags to a
-/// multi-count item in declaration order, so the two tags below map to
-/// Internal Diode and External Diode 1 respectively, in the same order
-/// `smbus::ThermalTelemetry`/[`thermal_report_task`] write them in.
+/// HID Power Device, Usage Page 0x84, Usage 0x05 "PowerSupply".
 #[rustfmt::skip]
 const THERMAL_REPORT_DESCRIPTOR: &[u8] = &[
     0x05, 0x84,       // Usage Page (Power Device)
@@ -167,10 +125,6 @@ impl RequestHandler for BrightnessHandler {
     }
 }
 
-/// Read-only: reports whatever's in [`POWER_TELEMETRY`], rejects writes.
-/// Consistent with `src/smbus.rs` staying read-only until we actually know
-/// the PA-2311-02A's own (still-unidentified) PMBus chip's register map —
-/// this comes from the confirmed INA219 instead, not that chip.
 struct PowerHandler;
 
 impl RequestHandler for PowerHandler {
@@ -190,9 +144,6 @@ impl RequestHandler for PowerHandler {
     }
 }
 
-/// Read-only: reports whatever's in [`THERMAL_TELEMETRY`], rejects writes.
-/// Same rationale as [`PowerHandler`] — this comes from the confirmed
-/// EMC1403, not the PSU's still-unidentified PMBus chip.
 struct ThermalHandler;
 
 impl RequestHandler for ThermalHandler {
@@ -211,11 +162,6 @@ impl RequestHandler for ThermalHandler {
     }
 }
 
-/// Everything spawned tasks need: the [`UsbDevice`] itself, and each HID
-/// interface's writer for pushing Input reports. Built in this same order
-/// (brightness, power, thermal) by [`init`], which is what fixes their USB
-/// interface numbers at 0/1/2 — `cinectl/src/device.rs` relies on that
-/// order to tell the interfaces apart.
 pub struct UsbPeripherals {
     pub usb: UsbDevice<'static, UsbDriver>,
     pub brightness_writer: HidWriter<'static, UsbDriver, 2>,
@@ -223,18 +169,6 @@ pub struct UsbPeripherals {
     pub thermal_writer: HidWriter<'static, UsbDriver, 4>,
 }
 
-/// Sets up the USB device with three HID interfaces: the VESA Monitor
-/// brightness control, and the two Power Device telemetry interfaces (see
-/// the module doc comment for why voltage/current/power and temperature are
-/// split). `unique_id` (currently the RP2040 board's factory flash ID, see
-/// `board.rs`) becomes the USB serial number, so every board is
-/// distinguishable out of the box — no provisioning step, and nothing for
-/// `cinectl` to set. Taken as a plain `&str` (clamped to what a USB string
-/// descriptor can hold in [`usb_device_config`]) rather than something
-/// shaped around how it's derived today, so a different source later —
-/// another chip's ID scheme, or a user-assigned name — is just a different
-/// caller, not a change here. Ready to spawn via [`usb_task`],
-/// [`hid_report_task`], [`power_report_task`] and [`thermal_report_task`].
 pub fn init(usb_driver: UsbDriver, unique_id: &'static str) -> UsbPeripherals {
     let mut builder = usb_builder(usb_driver, unique_id);
 
@@ -275,14 +209,8 @@ pub fn init(usb_driver: UsbDriver, unique_id: &'static str) -> UsbPeripherals {
     }
 }
 
-/// A USB string descriptor's `bLength` is one byte, and the descriptor is 2
-/// header bytes + 2 bytes per UTF-16 code unit — so at most
-/// `(255 - 2) / 2 = 126` UTF-16 code units fit. `embassy-usb` doesn't check
-/// this (an oversize string just silently truncates `bLength`, corrupting
-/// the descriptor), so `usb_device_config` clamps to it itself. Clamped by
-/// *byte* length, not actual UTF-16 length — conservative, since UTF-8 never
-/// takes fewer bytes than UTF-16 takes code units, so this can only truncate
-/// shorter than strictly necessary for non-ASCII input, never longer.
+/// USB string descriptor `bLength` is 1 byte: max (255 - 2 header) / 2 = 126
+/// UTF-16 code units.
 const MAX_SERIAL_LEN: usize = 126;
 
 fn usb_device_config(unique_id: &'static str) -> UsbConfig<'static> {
@@ -299,14 +227,10 @@ fn usb_device_config(unique_id: &'static str) -> UsbConfig<'static> {
     config
 }
 
-/// Truncates `s` to at most [`MAX_SERIAL_LEN`] bytes, at a `char` boundary.
 fn clamp_to_string_descriptor(s: &str) -> &str {
     &s[..s.floor_char_boundary(MAX_SERIAL_LEN)]
 }
 
-/// Allocates the descriptor/control buffers `Builder` needs (as `'static`
-/// storage, since the `UsbDevice` it produces gets spawned as a task) and
-/// starts a `Builder` from them.
 fn usb_builder(usb_driver: UsbDriver, unique_id: &'static str) -> Builder<'static, UsbDriver> {
     static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
     static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
@@ -323,8 +247,6 @@ fn usb_builder(usb_driver: UsbDriver, unique_id: &'static str) -> Builder<'stati
     )
 }
 
-/// Registers one HID interface on `builder` and returns its writer for
-/// pushing Input reports.
 fn build_hid_writer<const N: usize>(
     builder: &mut Builder<'static, UsbDriver>,
     report_descriptor: &'static [u8],
@@ -335,10 +257,6 @@ fn build_hid_writer<const N: usize>(
         report_descriptor,
         request_handler: Some(request_handler),
         poll_ms: 60,
-        // Tied to `N` (each interface's own report size) rather than a
-        // shared hardcoded constant, so growing one interface's report (like
-        // the PSU one did, to fit Power) doesn't require also remembering to
-        // bump this in step.
         max_packet_size: N as u16,
         hid_subclass: HidSubclass::No,
         hid_boot_protocol: HidBootProtocol::None,

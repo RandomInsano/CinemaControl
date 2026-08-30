@@ -74,8 +74,6 @@ fn read_thermal(api: &HidApi, board: &Board) -> Result<ThermalTelemetry> {
     Ok(ThermalTelemetry::from_bytes(buf[1..].try_into().unwrap()))
 }
 
-/// One reader thread's parsed Input report, or that its device stopped
-/// producing them (e.g. unplugged).
 enum Update {
     Brightness(u16),
     Power(PowerTelemetry),
@@ -83,17 +81,6 @@ enum Update {
     Error(String),
 }
 
-/// Streams brightness, power, and thermal Input reports as they arrive —
-/// one blocking reader thread per HID interface, since the firmware only
-/// pushes a report when a value actually changes (see
-/// `firmware/src/hid.rs`/`firmware/src/smbus.rs`), so a plain blocking
-/// `read` per thread is already exactly "watch for changes", no polling
-/// loop needed. Power and thermal are separate interfaces updating at very
-/// different rates (see `firmware/src/hid.rs`'s module doc comment); by
-/// default each is reported on its own line the moment it changes, but
-/// `combined` reprints one line with the latest of all three on every
-/// update instead — see [`watch_combined`]. Runs until interrupted
-/// (Ctrl-C).
 pub fn watch(api: &HidApi, board: &Board, combined: bool) -> Result<()> {
     let brightness_device = open(api, &board.brightness_path)?;
     let power_device = open(api, &board.power_path)?;
@@ -133,9 +120,6 @@ fn watch_separate(rx: mpsc::Receiver<Update>) -> Result<()> {
     Ok(())
 }
 
-/// Seeds `brightness`/`power`/`thermal` with a real feature-report snapshot
-/// first, so the first combined line has actual values in every field
-/// instead of just whichever one happens to change first.
 fn watch_combined(api: &HidApi, board: &Board, rx: mpsc::Receiver<Update>) -> Result<()> {
     let mut brightness = read_brightness(api, board)?;
     let mut power = read_power(api, board)?;
@@ -157,9 +141,6 @@ fn watch_combined(api: &HidApi, board: &Board, rx: mpsc::Receiver<Update>) -> Re
     Ok(())
 }
 
-/// Runs `format` against every Input report `device` produces, on its own
-/// thread, sending the parsed updates to `tx` until the device errors (e.g.
-/// unplugged), at which point the thread reports that and exits.
 fn spawn_reader(
     device: HidDevice,
     tx: mpsc::Sender<Update>,
