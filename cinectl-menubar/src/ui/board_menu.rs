@@ -16,7 +16,7 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSMenu, NSMenuItem};
 use objc2_foundation::NSString;
 
-use crate::slider::BrightnessSlider;
+use super::slider::BrightnessSlider;
 
 pub struct BoardMenu {
     pub item: Retained<NSMenuItem>,

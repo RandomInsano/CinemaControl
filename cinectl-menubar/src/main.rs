@@ -18,11 +18,9 @@
 //! it. Once this settles, pull the HID transport logic into a crate both
 //! binaries depend on.
 
-mod board_menu;
 mod device;
-mod icon;
 mod report;
-mod slider;
+mod ui;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CStr;
@@ -43,8 +41,9 @@ use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tray_icon::menu::{ContextMenu, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-use board_menu::BoardMenu;
 use device::Board;
+use ui::board_menu::BoardMenu;
+use ui::icon;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 // How long a menu-open refresh waits on any one board before giving up on
