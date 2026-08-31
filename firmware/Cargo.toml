@@ -15,8 +15,8 @@ embassy-sync = { version = "0.8.0", features = ["defmt"] }
 embassy-time = { version = "0.5.1", features = ["defmt"] }
 embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt", "max-handler-count-3", "max-interface-count-3"] }
 embedded-hal-async = "1.0.0"
-emc1403 = { path = "../emc1403" }
-ina219 = { path = "../ina219" }
+emc1403 = { path = "emc1403" }
+ina219 = { path = "ina219" }
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 portable-atomic = { version = "1.15", features = ["critical-section"] }
 protocol = { path = "../protocol" }

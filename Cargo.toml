@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["firmware", "cinectl", "emc1403", "ina219", "protocol"]
+members = ["firmware", "cinectl", "firmware/emc1403", "firmware/ina219", "protocol"]
 # `firmware` is `no_std`/`no_main` and only builds for `thumbv6m-none-eabi`
 # (pinned in `firmware/.cargo/config.toml`), which only applies when cargo is
 # invoked with `firmware/` as the working directory — cargo config discovery
@@ -9,10 +9,12 @@ members = ["firmware", "cinectl", "emc1403", "ina219", "protocol"]
 # host tool) instead of trying and failing to cross-build firmware. Always
 # `cd firmware` for firmware commands; see `AGENTS.md`.
 #
-# `emc1403` and `ina219` are standalone, host-buildable `no_std` driver
-# crates — neither is a `firmware` dependency yet (see their own doc
-# comments) — so they're plain default members alongside `cinectl`.
-default-members = ["cinectl", "emc1403", "ina219", "protocol"]
+# `emc1403` and `ina219` are `firmware`'s SMBus drivers, standalone and
+# host-buildable despite living under `firmware/` — each is generic over
+# `embedded-hal-async`'s `I2c` trait rather than `firmware`'s own bus type,
+# so they're plain default members alongside `cinectl` for host-side
+# building/testing rather than being pulled in only as `firmware` deps.
+default-members = ["cinectl", "firmware/emc1403", "firmware/ina219", "protocol"]
 
 # Cargo ignores [profile.*] in member manifests — these must live at the
 # workspace root, and apply to every member. `firmware` needs the aggressive
