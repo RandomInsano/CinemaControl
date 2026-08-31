@@ -322,7 +322,13 @@ fn read_brightness(api: &HidApi, board: &Board) -> Result<u16> {
         &board.brightness_path,
         BRIGHTNESS_REPORT_LEN,
         "brightness",
-        |payload| report::brightness_from_bytes(payload.try_into().unwrap()),
+        |payload| {
+            report::brightness_from_bytes(
+                payload
+                    .try_into()
+                    .expect("read_feature always hands decode() exactly report_len bytes"),
+            )
+        },
     )
 }
 
@@ -332,7 +338,13 @@ fn read_power(api: &HidApi, board: &Board) -> Result<PowerTelemetry> {
         &board.power_path,
         POWER_REPORT_LEN,
         "power",
-        |payload| PowerTelemetry::from_bytes(payload.try_into().unwrap()),
+        |payload| {
+            PowerTelemetry::from_bytes(
+                payload
+                    .try_into()
+                    .expect("read_feature always hands decode() exactly report_len bytes"),
+            )
+        },
     )
 }
 
@@ -342,7 +354,13 @@ fn read_thermal(api: &HidApi, board: &Board) -> Result<ThermalTelemetry> {
         &board.thermal_path,
         THERMAL_REPORT_LEN,
         "thermal",
-        |payload| ThermalTelemetry::from_bytes(payload.try_into().unwrap()),
+        |payload| {
+            ThermalTelemetry::from_bytes(
+                payload
+                    .try_into()
+                    .expect("read_feature always hands decode() exactly report_len bytes"),
+            )
+        },
     )
 }
 
