@@ -103,11 +103,21 @@ jobs:
       # excluded from default-members.
       - name: Build cinectl and cinectl-menubar
         run: cargo build -p cinectl -p cinectl-menubar --release
-      - name: Stage macOS binaries
+      - name: Stage cinectl binary
         run: |
           mkdir -p dist
           cp target/release/cinectl dist/cinectl-macos
-          cp target/release/cinectl-menubar dist/cinectl-menubar-macos
+      # Ad-hoc signed (no Apple Developer account in CI), so Gatekeeper will
+      # still flag it — see the note in src/login_item.rs about what that
+      # does and doesn't unlock.
+      - name: Build cinectl-menubar.app bundle
+        run: cinectl-menubar/packaging/bundle.sh target/release/cinectl-menubar
+      - name: Package .app into a .dmg
+        run: |
+          staging=$(mktemp -d)
+          cp -R cinectl-menubar/packaging/CinectlMenubar.app "$staging/"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname CinemaControl -srcfolder "$staging" -ov -format UDZO dist/CinectlMenubar.dmg
       - name: Upload macOS binaries
         uses: actions/upload-artifact@v6
         with:
@@ -226,13 +236,13 @@ jobs:
           name: cinectl-macos-binaries
           path: dist
       - name: Restore executable bit
-        run: chmod +x dist/cinectl-macos dist/cinectl-menubar-macos
+        run: chmod +x dist/cinectl-macos
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ github.ref_name }}" \
-            dist/*.deb dist/*.rpm dist/*.uf2 dist/cinectl-macos dist/cinectl-menubar-macos \
+            dist/*.deb dist/*.rpm dist/*.uf2 dist/cinectl-macos dist/CinectlMenubar.dmg \
             --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" \
             --generate-notes

@@ -14,11 +14,17 @@
 # directory.
 set -euo pipefail
 
+# Resolve a relative `$1` against the caller's cwd before the `cd` below
+# changes it out from under us.
+exe_path="${1:-}"
+if [[ -n "$exe_path" ]]; then
+    exe_path="$(cd "$(dirname "$exe_path")" && pwd)/$(basename "$exe_path")"
+fi
+
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 bundle=CinectlMenubar.app
 
-exe_path="${1:-}"
 if [[ -z "$exe_path" ]]; then
     (cd ../.. && cargo build -p cinectl-menubar --release)
     exe_path=../../target/release/cinectl-menubar
