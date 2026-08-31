@@ -23,14 +23,17 @@ mod login_item;
 mod report;
 mod ui;
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::CStr;
+use std::ffi::{CStr, c_void};
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use hidapi::{HidApi, HidDevice};
+use objc2::MainThreadMarker;
 use objc2_app_kit::NSMenu;
 use protocol::{
     BRIGHTNESS_REPORT_LEN, MAX_BRIGHTNESS, POWER_REPORT_LEN, PowerTelemetry, THERMAL_REPORT_LEN,
@@ -40,11 +43,12 @@ use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tray_icon::menu::{CheckMenuItem, ContextMenu, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tray_icon::{TrayIconBuilder, TrayIconEvent};
 
 use device::Board;
 use ui::board_menu::BoardMenu;
 use ui::icon;
+use ui::menu_delegate::MenuDelegate;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 // How long a menu-open refresh waits on any one board before giving up on
@@ -53,7 +57,7 @@ const REFRESH_TIMEOUT: Duration = Duration::from_millis(200);
 const DISCONNECTED_TEXT: &str = "No CinemaControl device found";
 
 fn main() -> Result<()> {
-    let mut api = HidApi::new().context("initializing HID backend")?;
+    let api = HidApi::new().context("initializing HID backend")?;
 
     let placeholder_item = MenuItem::new(DISCONNECTED_TEXT, false, None);
     let login_item_item = CheckMenuItem::with_id(
@@ -73,7 +77,6 @@ fn main() -> Result<()> {
         &quit_item,
     ])
     .context("building tray menu")?;
-    let mut placeholder_shown = true;
     // Board rows are inserted/removed as raw `NSMenuItem`s (see
     // `board_menu.rs`), so we manipulate the top-level menu's NSMenu
     // directly for those rather than going through muda's `Menu::insert`.
@@ -89,11 +92,25 @@ fn main() -> Result<()> {
         .build()
         .context("creating tray icon")?;
 
+    let mtm = MainThreadMarker::new().expect("must run on the main thread");
+    let state = Rc::new(RefCell::new(AppState {
+        api,
+        boards: BTreeMap::new(),
+        menu: menu.clone(),
+        placeholder_item: placeholder_item.clone(),
+        placeholder_shown: true,
+        top_ns_menu,
+    }));
+    // Refreshes board data synchronously, right before the menu is shown —
+    // see menu_delegate.rs for why this can't just happen in response to
+    // the tray icon's click event instead. Held for the rest of `main` so
+    // the (weak) delegate reference on the menu stays valid.
+    let _menu_delegate = MenuDelegate::new(mtm, Rc::clone(&state));
+    top_menu(top_ns_menu).setDelegate(Some(MenuDelegate::as_protocol_object(&_menu_delegate)));
+
     let mut builder = EventLoopBuilder::new();
     let mut event_loop = builder.build();
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
-
-    let mut boards: BTreeMap<String, BoardState> = BTreeMap::new();
 
     event_loop.run(move |event, _target, control_flow| {
         *control_flow = ControlFlow::WaitUntil(Instant::now() + POLL_INTERVAL);
@@ -101,40 +118,29 @@ fn main() -> Result<()> {
             return;
         }
 
-        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            if let TrayIconEvent::Click {
-                button_state: MouseButtonState::Down,
-                ..
-            } = event
-            {
-                refresh(&mut api, &mut boards, top_ns_menu);
-                // Reflect any change made outside the app (e.g. the user
-                // revoking it from System Settings > Login Items).
-                login_item_item.set_checked(login_item::is_enabled());
-            }
-        }
+        // The actual refresh now happens in MenuDelegate::menuNeedsUpdate,
+        // synchronously before the menu is shown — just drain the channel
+        // here so it doesn't grow unbounded.
+        while TrayIconEvent::receiver().try_recv().is_ok() {}
 
-        let mut disconnected = Vec::new();
-        for (serial, state) in boards.iter_mut() {
-            if !state.poll_drag() {
-                disconnected.push(serial.clone());
+        // `try_borrow_mut`, not `borrow_mut`: this can run re-entrantly
+        // while `MenuDelegate::menuNeedsUpdate` (which holds its own
+        // borrow for the ~200ms it may spend on I/O) is still on the
+        // stack. Skipping a tick here is harmless — drag polling just
+        // picks back up 250ms later — panicking is not.
+        if let Ok(mut state) = state.try_borrow_mut() {
+            let mut disconnected = Vec::new();
+            for (serial, board) in state.boards.iter_mut() {
+                if !board.poll_drag() {
+                    disconnected.push(serial.clone());
+                }
             }
-        }
-        for serial in disconnected {
-            if let Some(state) = boards.remove(&serial) {
-                eprintln!("CinemaControl device {serial:?} disconnected");
-                top_menu(top_ns_menu).removeItem(&state.menu.item);
+            for serial in disconnected {
+                if let Some(board) = state.boards.remove(&serial) {
+                    eprintln!("CinemaControl device {serial:?} disconnected");
+                    top_menu(top_ns_menu).removeItem(&board.menu.item);
+                }
             }
-        }
-
-        if boards.is_empty() && !placeholder_shown {
-            menu.insert(&placeholder_item, 0)
-                .expect("inserting placeholder");
-            placeholder_shown = true;
-        } else if !boards.is_empty() && placeholder_shown {
-            menu.remove(&placeholder_item)
-                .expect("removing placeholder");
-            placeholder_shown = false;
         }
 
         while let Ok(event) = MenuEvent::receiver().try_recv() {
@@ -153,19 +159,52 @@ fn main() -> Result<()> {
     });
 }
 
-fn top_menu(ns_menu: *mut std::ffi::c_void) -> &'static NSMenu {
+fn top_menu(ns_menu: *mut c_void) -> &'static NSMenu {
     unsafe { &*ns_menu.cast::<NSMenu>() }
+}
+
+/// All state a menu refresh touches, shared between the tao event loop
+/// (drag polling, menu/tray events) and `MenuDelegate` (populating the
+/// menu right before it's shown).
+pub(crate) struct AppState {
+    api: HidApi,
+    boards: BTreeMap<String, BoardState>,
+    menu: Menu,
+    placeholder_item: MenuItem,
+    placeholder_shown: bool,
+    top_ns_menu: *mut c_void,
+}
+
+impl AppState {
+    /// Re-discovers every connected board and queries each in parallel
+    /// (each bounded by `REFRESH_TIMEOUT`), updating `boards` and the menu
+    /// in place: new boards get a submenu, existing ones get fresh text,
+    /// and boards no longer found at all are torn down. Safe to call while
+    /// the menu is *not yet* visible (i.e. from `menuNeedsUpdate:`) —
+    /// inserting/removing top-level items while it's actually on screen is
+    /// what causes AppKit to dismiss it.
+    fn refresh(&mut self) {
+        refresh(&mut self.api, &mut self.boards, self.top_ns_menu);
+
+        if self.boards.is_empty() && !self.placeholder_shown {
+            self.menu
+                .insert(&self.placeholder_item, 0)
+                .expect("inserting placeholder");
+            self.placeholder_shown = true;
+        } else if !self.boards.is_empty() && self.placeholder_shown {
+            self.menu
+                .remove(&self.placeholder_item)
+                .expect("removing placeholder");
+            self.placeholder_shown = false;
+        }
+    }
 }
 
 /// Re-discovers every connected board and queries each in parallel (each
 /// bounded by `REFRESH_TIMEOUT`), updating `boards` and the menu in place:
 /// new boards get a submenu, existing ones get fresh text, and boards no
 /// longer found at all are torn down.
-fn refresh(
-    api: &mut HidApi,
-    boards: &mut BTreeMap<String, BoardState>,
-    top_ns_menu: *mut std::ffi::c_void,
-) {
+fn refresh(api: &mut HidApi, boards: &mut BTreeMap<String, BoardState>, top_ns_menu: *mut c_void) {
     if let Err(e) = api.refresh_devices() {
         eprintln!("failed to refresh HID device list: {e}");
         return;
@@ -226,7 +265,7 @@ fn apply(
     board: Board,
     telemetry: Telemetry,
     boards: &mut BTreeMap<String, BoardState>,
-    top_ns_menu: *mut std::ffi::c_void,
+    top_ns_menu: *mut c_void,
 ) {
     if let Some(state) = boards.get_mut(&board.serial) {
         state.brightness = telemetry.brightness;

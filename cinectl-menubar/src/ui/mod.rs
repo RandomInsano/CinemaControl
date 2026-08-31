@@ -4,4 +4,5 @@
 
 pub mod board_menu;
 pub mod icon;
+pub mod menu_delegate;
 pub mod slider;
