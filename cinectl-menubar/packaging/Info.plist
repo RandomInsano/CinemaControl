@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>CinectlMenubar</string>
+    <key>CFBundleDisplayName</key>
+    <string>CinemaControl</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.cinemacontrol.cinectl-menubar</string>
+    <key>CFBundleExecutable</key>
+    <string>cinectl-menubar</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <!-- Background/menu-bar-only app: no Dock icon, no app switcher entry.
+         Also set at runtime via tao's ActivationPolicy::Accessory, but
+         setting it here too means macOS treats it this way from launch
+         rather than only once our own code runs. -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>

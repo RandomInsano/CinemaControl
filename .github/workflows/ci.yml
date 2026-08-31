@@ -98,8 +98,31 @@ jobs:
         run: rustup show
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-      - name: Build cinectl
-        run: cargo build -p cinectl --release
+      # `cinectl-menubar` drives an NSStatusItem via AppKit, so it only
+      # builds on macOS — see the note in the root Cargo.toml about why it's
+      # excluded from default-members.
+      - name: Build cinectl and cinectl-menubar
+        run: cargo build -p cinectl -p cinectl-menubar --release
+      - name: Stage cinectl binary
+        run: |
+          mkdir -p dist
+          cp target/release/cinectl dist/cinectl-macos
+      # Ad-hoc signed (no Apple Developer account in CI), so Gatekeeper will
+      # still flag it — see the note in src/login_item.rs about what that
+      # does and doesn't unlock.
+      - name: Build cinectl-menubar.app bundle
+        run: cinectl-menubar/packaging/bundle.sh target/release/cinectl-menubar
+      - name: Package .app into a .dmg
+        run: |
+          staging=$(mktemp -d)
+          cp -R cinectl-menubar/packaging/CinectlMenubar.app "$staging/"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname CinemaControl -srcfolder "$staging" -ov -format UDZO dist/CinectlMenubar.dmg
+      - name: Upload macOS binaries
+        uses: actions/upload-artifact@v6
+        with:
+          name: cinectl-macos-binaries
+          path: dist/*
 
   package-deb:
     name: Build .deb package
@@ -186,7 +209,7 @@ jobs:
 
   release:
     name: Publish release
-    needs: [package-deb, package-rpm, firmware]
+    needs: [package-deb, package-rpm, firmware, cinectl-macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -207,11 +230,19 @@ jobs:
         with:
           name: cinemacontrol-firmware
           path: dist
+      - name: Download macOS binaries
+        uses: actions/download-artifact@v7
+        with:
+          name: cinectl-macos-binaries
+          path: dist
+      - name: Restore executable bit
+        run: chmod +x dist/cinectl-macos
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" dist/*.deb dist/*.rpm dist/*.uf2 \
+          gh release create "${{ github.ref_name }}" \
+            dist/*.deb dist/*.rpm dist/*.uf2 dist/cinectl-macos dist/CinectlMenubar.dmg \
             --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" \
             --generate-notes
