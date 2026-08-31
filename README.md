@@ -26,17 +26,17 @@ Shared between them:
 
 Standalone `no_std` drivers, generic over `embedded-hal-async`'s `I2c` trait
 rather than any particular board's bus type, so they drop onto whatever
-transport a caller already has. Neither is a `firmware` dependency yet —
-`firmware/src/smbus.rs` talks to both chips directly — but they're workspace
-members in their own right, host-buildable and independently testable.
+transport a caller already has. Both are `firmware` dependencies — used
+directly by `firmware/src/smbus.rs` — but live as separate workspace members
+under `firmware/`, host-buildable and independently testable.
 
-- **`ina219/`** — driver for the TI INA219 zero-drift, bidirectional
+- **`firmware/ina219/`** — driver for the TI INA219 zero-drift, bidirectional
   current/power monitor on the PSU (voltage, current, power), transcribed
   from datasheet SBOS448. The INA219 exposes only six registers with no
   auto-increment across them and no identification registers, so this crate
   has no `identify`/`probe` equivalent, and current/power read back as zero
   until the driver has been calibrated against the board's shunt resistor.
-- **`emc1403/`** — driver for the Microchip EMC1403/EMC1404 SMBus
+- **`firmware/emc1403/`** — driver for the Microchip EMC1403/EMC1404 SMBus
   temperature sensor family on the PSU, transcribed from datasheet
   DS20005272A. Register-level accessors are exposed alongside the typed ones
   so registers the driver doesn't model directly are still reachable without
