@@ -1,0 +1,368 @@
+//! Minimal macOS menu bar companion for CinemaControl boards: shows the PSU
+//! power/temperature readings and lets you drag brightness from the menu
+//! bar, without needing a terminal open. Each connected board gets its own
+//! submenu; boards can come and go (hot-plug/unplug, or none at all at
+//! launch) without a restart.
+//!
+//! There's no background polling: nothing reads a board until the user
+//! actually opens the menu, at which point every currently-plugged-in board
+//! is queried in parallel, each bounded by `REFRESH_TIMEOUT` so one stalled
+//! device can't hold up the rest. This also sidesteps the round-trip
+//! latency of the old continuous-input-report design, which was the root
+//! cause of several rounds of slider jumpiness — a feature-report read/set
+//! is a synchronous request/response, not a periodic push.
+//!
+//! `device.rs` and `report.rs` are copies of the same-named modules in
+//! `cinectl` rather than a shared dependency — with only this one other
+//! caller so far, extracting a lib crate would be guessing at a shape for
+//! it. Once this settles, pull the HID transport logic into a crate both
+//! binaries depend on.
+
+mod board_menu;
+mod device;
+mod icon;
+mod report;
+mod slider;
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::CStr;
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result};
+use hidapi::{HidApi, HidDevice};
+use objc2_app_kit::NSMenu;
+use protocol::{
+    BRIGHTNESS_REPORT_LEN, MAX_BRIGHTNESS, POWER_REPORT_LEN, PowerTelemetry, THERMAL_REPORT_LEN,
+    ThermalTelemetry,
+};
+use tao::event::Event;
+use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+use tray_icon::menu::{ContextMenu, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::{MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+use board_menu::BoardMenu;
+use device::Board;
+
+const POLL_INTERVAL: Duration = Duration::from_millis(250);
+// How long a menu-open refresh waits on any one board before giving up on
+// it for this round and showing whatever it last had.
+const REFRESH_TIMEOUT: Duration = Duration::from_millis(200);
+const DISCONNECTED_TEXT: &str = "No CinemaControl device found";
+
+fn main() -> Result<()> {
+    let mut api = HidApi::new().context("initializing HID backend")?;
+
+    let placeholder_item = MenuItem::new(DISCONNECTED_TEXT, false, None);
+    let quit_item = MenuItem::with_id("quit", "Quit", true, None);
+
+    let menu = Menu::new();
+    menu.append_items(&[
+        &placeholder_item,
+        &PredefinedMenuItem::separator(),
+        &quit_item,
+    ])
+    .context("building tray menu")?;
+    let mut placeholder_shown = true;
+    // Board rows are inserted/removed as raw `NSMenuItem`s (see
+    // `board_menu.rs`), so we manipulate the top-level menu's NSMenu
+    // directly for those rather than going through muda's `Menu::insert`.
+    let top_ns_menu = menu.ns_menu();
+
+    // Held for the rest of `main` so the status item stays alive; nothing
+    // needs to touch it again now that the icon is static.
+    let _tray = TrayIconBuilder::new()
+        .with_menu(Box::new(menu.clone()))
+        .with_tooltip("CinemaControl")
+        .with_icon(icon::render_sf_symbol("lightbulb.fill", 18.0)?)
+        .with_icon_as_template(true)
+        .build()
+        .context("creating tray icon")?;
+
+    let mut builder = EventLoopBuilder::new();
+    let mut event_loop = builder.build();
+    event_loop.set_activation_policy(ActivationPolicy::Accessory);
+
+    let mut boards: BTreeMap<String, BoardState> = BTreeMap::new();
+
+    event_loop.run(move |event, _target, control_flow| {
+        *control_flow = ControlFlow::WaitUntil(Instant::now() + POLL_INTERVAL);
+        if !matches!(event, Event::NewEvents(_)) {
+            return;
+        }
+
+        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
+            if let TrayIconEvent::Click {
+                button_state: MouseButtonState::Down,
+                ..
+            } = event
+            {
+                refresh(&mut api, &mut boards, top_ns_menu);
+            }
+        }
+
+        let mut disconnected = Vec::new();
+        for (serial, state) in boards.iter_mut() {
+            if !state.poll_drag() {
+                disconnected.push(serial.clone());
+            }
+        }
+        for serial in disconnected {
+            if let Some(state) = boards.remove(&serial) {
+                eprintln!("CinemaControl device {serial:?} disconnected");
+                top_menu(top_ns_menu).removeItem(&state.menu.item);
+            }
+        }
+
+        if boards.is_empty() && !placeholder_shown {
+            menu.insert(&placeholder_item, 0)
+                .expect("inserting placeholder");
+            placeholder_shown = true;
+        } else if !boards.is_empty() && placeholder_shown {
+            menu.remove(&placeholder_item)
+                .expect("removing placeholder");
+            placeholder_shown = false;
+        }
+
+        while let Ok(event) = MenuEvent::receiver().try_recv() {
+            if event.id().0 == "quit" {
+                *control_flow = ControlFlow::Exit;
+            }
+        }
+    });
+}
+
+fn top_menu(ns_menu: *mut std::ffi::c_void) -> &'static NSMenu {
+    unsafe { &*ns_menu.cast::<NSMenu>() }
+}
+
+/// Re-discovers every connected board and queries each in parallel (each
+/// bounded by `REFRESH_TIMEOUT`), updating `boards` and the menu in place:
+/// new boards get a submenu, existing ones get fresh text, and boards no
+/// longer found at all are torn down.
+fn refresh(
+    api: &mut HidApi,
+    boards: &mut BTreeMap<String, BoardState>,
+    top_ns_menu: *mut std::ffi::c_void,
+) {
+    if let Err(e) = api.refresh_devices() {
+        eprintln!("failed to refresh HID device list: {e}");
+        return;
+    }
+    let discovered = match device::discover(api) {
+        Ok(boards) => boards,
+        Err(e) => {
+            eprintln!("failed to enumerate CinemaControl devices: {e}");
+            return;
+        }
+    };
+    let discovered_serials: BTreeSet<String> =
+        discovered.iter().map(|b| b.serial.clone()).collect();
+
+    let (tx, rx) = mpsc::channel();
+    for board in discovered {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let result = HidApi::new()
+                .context("initializing HID backend")
+                .and_then(|api| read_telemetry(&api, &board));
+            let _ = tx.send((board, result));
+        });
+    }
+    drop(tx);
+
+    let deadline = Instant::now() + REFRESH_TIMEOUT;
+    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(remaining) {
+            Ok((board, Ok(telemetry))) => apply(api, board, telemetry, boards, top_ns_menu),
+            Ok((board, Err(e))) => {
+                eprintln!(
+                    "failed to read CinemaControl device {:?}: {e}",
+                    board.serial
+                )
+            }
+            Err(_) => break,
+        }
+    }
+
+    let gone: Vec<String> = boards
+        .keys()
+        .filter(|serial| !discovered_serials.contains(*serial))
+        .cloned()
+        .collect();
+    for serial in gone {
+        if let Some(state) = boards.remove(&serial) {
+            top_menu(top_ns_menu).removeItem(&state.menu.item);
+        }
+    }
+}
+
+/// Updates an already-tracked board's menu with fresh telemetry, or builds
+/// a new board's menu and adds it, opening a write handle it keeps for
+/// slider drags for as long as it stays connected.
+fn apply(
+    api: &HidApi,
+    board: Board,
+    telemetry: Telemetry,
+    boards: &mut BTreeMap<String, BoardState>,
+    top_ns_menu: *mut std::ffi::c_void,
+) {
+    if let Some(state) = boards.get_mut(&board.serial) {
+        state.brightness = telemetry.brightness;
+        state.slider_synced_percent = percent(telemetry.brightness);
+        state
+            .menu
+            .set_brightness_text(&brightness_text(telemetry.brightness));
+        state.menu.slider.set_percent(state.slider_synced_percent);
+        state
+            .menu
+            .set_power_text(&format!("Power: {}", telemetry.power));
+        state
+            .menu
+            .set_thermal_text(&format!("Temp: {}", telemetry.thermal));
+        return;
+    }
+
+    let write_device = match open(api, &board.brightness_path) {
+        Ok(device) => device,
+        Err(e) => {
+            eprintln!(
+                "failed to open CinemaControl device {:?} for writing: {e}",
+                board.serial
+            );
+            return;
+        }
+    };
+
+    let menu = BoardMenu::new(
+        &board.serial,
+        &brightness_text(telemetry.brightness),
+        &format!("Power: {}", telemetry.power),
+        &format!("Temp: {}", telemetry.thermal),
+        percent(telemetry.brightness),
+    );
+    let position = boards.len() as isize;
+    top_menu(top_ns_menu).insertItem_atIndex(&menu.item, position);
+
+    boards.insert(
+        board.serial,
+        BoardState {
+            menu,
+            write_device,
+            brightness: telemetry.brightness,
+            slider_synced_percent: percent(telemetry.brightness),
+        },
+    );
+}
+
+struct BoardState {
+    menu: BoardMenu,
+    write_device: HidDevice,
+    brightness: u16,
+    slider_synced_percent: u32,
+}
+
+impl BoardState {
+    /// Reconciles the slider against any drag since the last tick, writing
+    /// and echoing a new brightness if it's moved. Returns `false` once the
+    /// board is gone (the caller is then responsible for tearing this entry
+    /// down).
+    fn poll_drag(&mut self) -> bool {
+        let dragged_percent = self.menu.slider.percent();
+        if dragged_percent == self.slider_synced_percent {
+            return true;
+        }
+        // Round rather than floor: paired with the rounding in `percent()`,
+        // this keeps percent -> brightness -> percent a stable round trip.
+        self.brightness = ((dragged_percent * u32::from(MAX_BRIGHTNESS) + 50) / 100)
+            .min(u32::from(MAX_BRIGHTNESS)) as u16;
+        self.slider_synced_percent = dragged_percent;
+        if write_brightness(&self.write_device, self.brightness).is_err() {
+            return false;
+        }
+        self.menu
+            .set_brightness_text(&brightness_text(self.brightness));
+        true
+    }
+}
+
+struct Telemetry {
+    brightness: u16,
+    power: PowerTelemetry,
+    thermal: ThermalTelemetry,
+}
+
+fn read_telemetry(api: &HidApi, board: &Board) -> Result<Telemetry> {
+    Ok(Telemetry {
+        brightness: read_brightness(api, board)?,
+        power: read_power(api, board)?,
+        thermal: read_thermal(api, board)?,
+    })
+}
+
+fn brightness_text(value: u16) -> String {
+    format!("Brightness: {}%", percent(value))
+}
+
+fn percent(value: u16) -> u32 {
+    (u32::from(value) * 100 + u32::from(MAX_BRIGHTNESS) / 2) / u32::from(MAX_BRIGHTNESS)
+}
+
+fn write_brightness(device: &HidDevice, value: u16) -> Result<()> {
+    let report = report::brightness_feature_report(value);
+    device
+        .send_feature_report(&report)
+        .context("writing brightness feature report")
+}
+
+fn read_brightness(api: &HidApi, board: &Board) -> Result<u16> {
+    read_feature(
+        api,
+        &board.brightness_path,
+        BRIGHTNESS_REPORT_LEN,
+        "brightness",
+        |payload| report::brightness_from_bytes(payload.try_into().unwrap()),
+    )
+}
+
+fn read_power(api: &HidApi, board: &Board) -> Result<PowerTelemetry> {
+    read_feature(
+        api,
+        &board.power_path,
+        POWER_REPORT_LEN,
+        "power",
+        |payload| PowerTelemetry::from_bytes(payload.try_into().unwrap()),
+    )
+}
+
+fn read_thermal(api: &HidApi, board: &Board) -> Result<ThermalTelemetry> {
+    read_feature(
+        api,
+        &board.thermal_path,
+        THERMAL_REPORT_LEN,
+        "thermal",
+        |payload| ThermalTelemetry::from_bytes(payload.try_into().unwrap()),
+    )
+}
+
+fn read_feature<T>(
+    api: &HidApi,
+    path: &CStr,
+    report_len: usize,
+    label: &str,
+    decode: impl FnOnce(&[u8]) -> T,
+) -> Result<T> {
+    let device = open(api, path)?;
+    let mut buf = vec![0u8; report_len + 1];
+    device
+        .get_feature_report(&mut buf)
+        .with_context(|| format!("reading {label} feature report"))?;
+    Ok(decode(&buf[1..]))
+}
+
+fn open(api: &HidApi, path: &CStr) -> Result<HidDevice> {
+    api.open_path(path)
+        .with_context(|| format!("opening HID interface {path:?}"))
+}

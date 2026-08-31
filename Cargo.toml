@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["firmware", "cinectl", "firmware/emc1403", "firmware/ina219", "protocol"]
+members = [
+    "firmware",
+    "cinectl",
+    "cinectl-menubar",
+    "firmware/emc1403",
+    "firmware/ina219",
+    "protocol",
+]
 # `firmware` is `no_std`/`no_main` and only builds for `thumbv6m-none-eabi`
 # (pinned in `firmware/.cargo/config.toml`), which only applies when cargo is
 # invoked with `firmware/` as the working directory — cargo config discovery
@@ -14,6 +21,10 @@ members = ["firmware", "cinectl", "firmware/emc1403", "firmware/ina219", "protoc
 # `embedded-hal-async`'s `I2c` trait rather than `firmware`'s own bus type,
 # so they're plain default members alongside `cinectl` for host-side
 # building/testing rather than being pulled in only as `firmware` deps.
+#
+# `cinectl-menubar` is macOS-only (it drives an NSStatusItem) and is left out
+# of default-members for the same reason `firmware` is: a bare
+# `cargo build`/`check` shouldn't try and fail to build it on Linux.
 default-members = ["cinectl", "firmware/emc1403", "firmware/ina219", "protocol"]
 
 # Cargo ignores [profile.*] in member manifests — these must live at the
