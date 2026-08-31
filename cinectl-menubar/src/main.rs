@@ -19,6 +19,7 @@
 //! binaries depend on.
 
 mod device;
+mod login_item;
 mod report;
 mod ui;
 
@@ -38,7 +39,7 @@ use protocol::{
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
-use tray_icon::menu::{ContextMenu, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, ContextMenu, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 use device::Board;
@@ -55,12 +56,20 @@ fn main() -> Result<()> {
     let mut api = HidApi::new().context("initializing HID backend")?;
 
     let placeholder_item = MenuItem::new(DISCONNECTED_TEXT, false, None);
+    let login_item_item = CheckMenuItem::with_id(
+        "start-at-login",
+        "Start at Login",
+        true,
+        login_item::is_enabled(),
+        None,
+    );
     let quit_item = MenuItem::with_id("quit", "Quit", true, None);
 
     let menu = Menu::new();
     menu.append_items(&[
         &placeholder_item,
         &PredefinedMenuItem::separator(),
+        &login_item_item,
         &quit_item,
     ])
     .context("building tray menu")?;
@@ -99,6 +108,9 @@ fn main() -> Result<()> {
             } = event
             {
                 refresh(&mut api, &mut boards, top_ns_menu);
+                // Reflect any change made outside the app (e.g. the user
+                // revoking it from System Settings > Login Items).
+                login_item_item.set_checked(login_item::is_enabled());
             }
         }
 
@@ -126,8 +138,16 @@ fn main() -> Result<()> {
         }
 
         while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id().0 == "quit" {
-                *control_flow = ControlFlow::Exit;
+            match event.id().0.as_str() {
+                "quit" => *control_flow = ControlFlow::Exit,
+                "start-at-login" => {
+                    let enable = !login_item_item.is_checked();
+                    match login_item::set_enabled(enable) {
+                        Ok(()) => login_item_item.set_checked(enable),
+                        Err(e) => eprintln!("failed to update login item: {e:#}"),
+                    }
+                }
+                _ => {}
             }
         }
     });
