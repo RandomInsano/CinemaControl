@@ -99,6 +99,7 @@ fn main() -> Result<()> {
         menu: menu.clone(),
         placeholder_item: placeholder_item.clone(),
         placeholder_shown: true,
+        refreshed_this_open: false,
         top_ns_menu,
     }));
     // Refreshes board data synchronously, right before the menu is shown —
@@ -135,11 +136,17 @@ fn main() -> Result<()> {
                     disconnected.push(serial.clone());
                 }
             }
+            // Drop tracking (so we stop polling/writing to it) but don't
+            // touch its still-visible NSMenuItem here — this tick runs on
+            // a timer regardless of whether the menu is currently open,
+            // and removing a top-level item from an open menu is the same
+            // bug menuNeedsUpdate exists to avoid, just via a different
+            // trigger. Its stale submenu just sits there until the next
+            // open's discovery (safely, pre-display) confirms it's really
+            // gone and cleans it up then.
             for serial in disconnected {
-                if let Some(board) = state.boards.remove(&serial) {
-                    eprintln!("CinemaControl device {serial:?} disconnected");
-                    top_menu(top_ns_menu).removeItem(&board.menu.item);
-                }
+                state.boards.remove(&serial);
+                eprintln!("CinemaControl device {serial:?} disconnected");
             }
         }
 
@@ -173,6 +180,11 @@ pub(crate) struct AppState {
     placeholder_item: MenuItem,
     placeholder_shown: bool,
     top_ns_menu: *mut c_void,
+    /// Set by `MenuDelegate::menuNeedsUpdate` once it's refreshed for the
+    /// menu's current open session, cleared by `menuDidClose` — caps it at
+    /// one refresh per open even if AppKit calls `menuNeedsUpdate` more
+    /// than once while it's up.
+    pub(crate) refreshed_this_open: bool,
 }
 
 impl AppState {
