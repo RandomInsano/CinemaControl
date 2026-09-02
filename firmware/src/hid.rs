@@ -1,6 +1,6 @@
-//! USB HID: VESA/USB Monitor Control Class brightness control, plus two
+//! USB HID: VESA/USB Monitor Control Class brightness control, plus three
 //! separate Power Device interfaces for PSU telemetry (voltage/current/power,
-//! temperature).
+//! temperature) and a fourth for the RP2040's own die temperature.
 
 use defmt::warn;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -16,9 +16,10 @@ use static_cell::StaticCell;
 use protocol::Report;
 
 use crate::board::UsbDriver;
+use crate::chip_temp::CHIP_TEMPERATURE;
 use crate::smbus::{POWER_TELEMETRY, THERMAL_TELEMETRY};
 
-pub static BRIGHTNESS: Watch<CriticalSectionRawMutex, u16, 3> = Watch::new_with(512);
+pub static BRIGHTNESS: Watch<CriticalSectionRawMutex, u16, 4> = Watch::new_with(512);
 
 pub fn restore_brightness(value: u16) {
     BRIGHTNESS
@@ -99,6 +100,25 @@ const THERMAL_REPORT_DESCRIPTOR: &[u8] = &[
     0xC0,             // End Collection
 ];
 
+/// HID Power Device, Usage Page 0x84, Usage 0x05 "PowerSupply".
+#[rustfmt::skip]
+const CHIP_TEMP_REPORT_DESCRIPTOR: &[u8] = &[
+    0x05, 0x84,       // Usage Page (Power Device)
+    0x09, 0x05,       // Usage (PowerSupply)
+    0xA1, 0x01,       // Collection (Application)
+
+    0x75, 0x10,       //   Report Size (16)
+    0x95, 0x01,       //   Report Count (1)
+    0x16, 0x70, 0xFE, //   Logical Minimum (-400)
+    0x26, 0xDC, 0x05, //   Logical Maximum (1500)
+    0x09, 0x36,       //   Usage (Temperature) -- RP2040 die
+    0x81, 0x02,       //   Input (Data,Var,Abs)
+    0x09, 0x36,       //   Usage (Temperature) -- RP2040 die
+    0xB1, 0x02,       //   Feature (Data,Var,Abs)
+
+    0xC0,             // End Collection
+];
+
 struct BrightnessHandler;
 
 impl RequestHandler for BrightnessHandler {
@@ -156,11 +176,27 @@ impl RequestHandler for ThermalHandler {
     }
 }
 
+struct ChipTempHandler;
+
+impl RequestHandler for ChipTempHandler {
+    fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
+        match id {
+            ReportId::Feature(_) | ReportId::In(_) => {
+                let bytes = CHIP_TEMPERATURE.try_get().unwrap().to_bytes();
+                buf[..bytes.len()].copy_from_slice(&bytes);
+                Some(bytes.len())
+            }
+            _ => None,
+        }
+    }
+}
+
 pub struct UsbPeripherals {
     pub usb: UsbDevice<'static, UsbDriver>,
     pub brightness_writer: HidWriter<'static, UsbDriver, { protocol::BRIGHTNESS_REPORT_LEN }>,
     pub power_writer: HidWriter<'static, UsbDriver, { protocol::POWER_REPORT_LEN }>,
     pub thermal_writer: HidWriter<'static, UsbDriver, { protocol::THERMAL_REPORT_LEN }>,
+    pub chip_temp_writer: HidWriter<'static, UsbDriver, { protocol::CHIP_TEMP_REPORT_LEN }>,
 }
 
 pub fn init(usb_driver: UsbDriver, unique_id: &'static str) -> UsbPeripherals {
@@ -193,6 +229,15 @@ pub fn init(usb_driver: UsbDriver, unique_id: &'static str) -> UsbPeripherals {
         THERMAL_STATE.init(HidState::new()),
     );
 
+    static CHIP_TEMP_HANDLER: StaticCell<ChipTempHandler> = StaticCell::new();
+    static CHIP_TEMP_STATE: StaticCell<HidState> = StaticCell::new();
+    let chip_temp_writer = build_hid_writer(
+        &mut builder,
+        CHIP_TEMP_REPORT_DESCRIPTOR,
+        CHIP_TEMP_HANDLER.init(ChipTempHandler),
+        CHIP_TEMP_STATE.init(HidState::new()),
+    );
+
     let usb = builder.build();
 
     UsbPeripherals {
@@ -200,6 +245,7 @@ pub fn init(usb_driver: UsbDriver, unique_id: &'static str) -> UsbPeripherals {
         brightness_writer,
         power_writer,
         thermal_writer,
+        chip_temp_writer,
     }
 }
 
@@ -310,5 +356,22 @@ pub async fn thermal_report_task(
         }
 
         value = thermal.changed().await;
+    }
+}
+
+#[embassy_executor::task]
+pub async fn chip_temp_report_task(
+    mut writer: HidWriter<'static, UsbDriver, { protocol::CHIP_TEMP_REPORT_LEN }>,
+) -> ! {
+    writer.ready().await;
+    let mut chip_temp = CHIP_TEMPERATURE.receiver().unwrap();
+    let mut value = chip_temp.try_get().unwrap();
+
+    loop {
+        if let Err(e) = writer.write(&value.to_bytes()).await {
+            warn!("chip temperature input report write failed: {:?}", e);
+        }
+
+        value = chip_temp.changed().await;
     }
 }

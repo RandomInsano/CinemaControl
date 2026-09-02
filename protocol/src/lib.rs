@@ -15,6 +15,7 @@ pub const MAX_BRIGHTNESS: u16 = 1023;
 pub const BRIGHTNESS_REPORT_LEN: usize = 2;
 pub const POWER_REPORT_LEN: usize = 8;
 pub const THERMAL_REPORT_LEN: usize = 4;
+pub const CHIP_TEMP_REPORT_LEN: usize = 2;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct PowerTelemetry {
@@ -86,5 +87,30 @@ impl fmt::Display for ThermalTelemetry {
             f32::from(self.internal_decic) / 10.0,
             f32::from(self.external1_decic) / 10.0,
         )
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChipTemperature {
+    pub decic: i16,
+}
+
+impl ChipTemperature {
+    pub fn to_bytes(self) -> [u8; CHIP_TEMP_REPORT_LEN] {
+        let mut buf = [0u8; CHIP_TEMP_REPORT_LEN];
+        Report::new(&mut buf).field(self.decic);
+        buf
+    }
+
+    pub fn from_bytes(bytes: [u8; CHIP_TEMP_REPORT_LEN]) -> Self {
+        Self {
+            decic: i16::from_le_bytes(bytes),
+        }
+    }
+}
+
+impl fmt::Display for ChipTemperature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "chip {:.1}°C", f32::from(self.decic) / 10.0)
     }
 }

@@ -25,7 +25,7 @@ mod ui;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::{CStr, c_void};
+use std::ffi::{CStr, CString, c_void};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
@@ -36,8 +36,8 @@ use hidapi::{HidApi, HidDevice};
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSMenu;
 use protocol::{
-    BRIGHTNESS_REPORT_LEN, MAX_BRIGHTNESS, POWER_REPORT_LEN, PowerTelemetry, THERMAL_REPORT_LEN,
-    ThermalTelemetry,
+    BRIGHTNESS_REPORT_LEN, CHIP_TEMP_REPORT_LEN, ChipTemperature, MAX_BRIGHTNESS,
+    POWER_REPORT_LEN, PowerTelemetry, THERMAL_REPORT_LEN, ThermalTelemetry,
 };
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -292,10 +292,15 @@ fn apply(
         state
             .menu
             .set_thermal_text(&format!("Temp: {}", telemetry.thermal));
+        state
+            .menu
+            .set_chip_temp_text(&format!("MCU: {}", telemetry.chip_temp));
         return;
     }
 
-    let write_device = match open(api, &board.brightness_path) {
+    let write_device = match require_path(&board.brightness_path, "brightness")
+        .and_then(|path| open(api, path))
+    {
         Ok(device) => device,
         Err(e) => {
             eprintln!(
@@ -311,6 +316,7 @@ fn apply(
         &brightness_text(telemetry.brightness),
         &format!("Power: {}", telemetry.power),
         &format!("Temp: {}", telemetry.thermal),
+        &format!("MCU: {}", telemetry.chip_temp),
         percent(telemetry.brightness),
     );
     let position = boards.len() as isize;
@@ -362,13 +368,20 @@ struct Telemetry {
     brightness: u16,
     power: PowerTelemetry,
     thermal: ThermalTelemetry,
+    chip_temp: ChipTemperature,
 }
 
+/// Only `brightness` is required for a board to be shown at all — it's the
+/// one interface every CinemaControl firmware has ever shipped with, so a
+/// board that fails to answer it isn't meaningfully "there." The PSU/thermal
+/// interfaces are best-effort: a board whose firmware predates one of them
+/// (e.g. `chip_temp`) still shows up, just with that field defaulted.
 fn read_telemetry(api: &HidApi, board: &Board) -> Result<Telemetry> {
     Ok(Telemetry {
         brightness: read_brightness(api, board)?,
-        power: read_power(api, board)?,
-        thermal: read_thermal(api, board)?,
+        power: read_power(api, board).unwrap_or_default(),
+        thermal: read_thermal(api, board).unwrap_or_default(),
+        chip_temp: read_chip_temp(api, board).unwrap_or_default(),
     })
 }
 
@@ -390,7 +403,7 @@ fn write_brightness(device: &HidDevice, value: u16) -> Result<()> {
 fn read_brightness(api: &HidApi, board: &Board) -> Result<u16> {
     read_feature(
         api,
-        &board.brightness_path,
+        require_path(&board.brightness_path, "brightness")?,
         BRIGHTNESS_REPORT_LEN,
         "brightness",
         |payload| {
@@ -406,7 +419,7 @@ fn read_brightness(api: &HidApi, board: &Board) -> Result<u16> {
 fn read_power(api: &HidApi, board: &Board) -> Result<PowerTelemetry> {
     read_feature(
         api,
-        &board.power_path,
+        require_path(&board.power_path, "power")?,
         POWER_REPORT_LEN,
         "power",
         |payload| {
@@ -422,7 +435,7 @@ fn read_power(api: &HidApi, board: &Board) -> Result<PowerTelemetry> {
 fn read_thermal(api: &HidApi, board: &Board) -> Result<ThermalTelemetry> {
     read_feature(
         api,
-        &board.thermal_path,
+        require_path(&board.thermal_path, "thermal")?,
         THERMAL_REPORT_LEN,
         "thermal",
         |payload| {
@@ -433,6 +446,31 @@ fn read_thermal(api: &HidApi, board: &Board) -> Result<ThermalTelemetry> {
             )
         },
     )
+}
+
+fn read_chip_temp(api: &HidApi, board: &Board) -> Result<ChipTemperature> {
+    read_feature(
+        api,
+        require_path(&board.chip_temp_path, "chip temperature")?,
+        CHIP_TEMP_REPORT_LEN,
+        "chip temperature",
+        |payload| {
+            ChipTemperature::from_bytes(
+                payload
+                    .try_into()
+                    .expect("read_feature always hands decode() exactly report_len bytes"),
+            )
+        },
+    )
+}
+
+/// A board only needs to expose *some* interface to be discovered (see
+/// `device::discover`) — this is where a board missing one specific
+/// interface (e.g. older firmware without `chip_temp`) surfaces as a clear
+/// error instead of a HID open failure.
+fn require_path<'a>(path: &'a Option<CString>, label: &str) -> Result<&'a CStr> {
+    path.as_deref()
+        .with_context(|| format!("device has no {label} interface"))
 }
 
 fn read_feature<T>(

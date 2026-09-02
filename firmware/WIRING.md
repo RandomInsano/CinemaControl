@@ -41,6 +41,12 @@ need to change if this mapping does.
 | 6           | Backlight PWM | GPIO15 | 20                | `BacklightPin` |
 | 1, 5, 7, 8  | GND           | GND    | 3, 8, 13, ...     |                |
 
+GPIO16 isn't part of the harness at all — on a build with the `neopixel`
+feature (see `firmware/README.md`), it drives a WS2812 ("NeoPixel") that
+mirrors the current backlight brightness (`neopixel.rs`, toggled off via its
+`ENABLED` const): the RP2040-Zero's onboard one if that's the board, or an
+external one wired to GPIO16 on a Pico. Unused without that feature.
+
 SMBus is run at 100kHz (`SMBUS_FREQUENCY_HZ` in `board.rs`) with the RP2040's
 I2C0 peripheral in async mode. The RP2040 GPIOs are 3.3V logic — confirm with
 a meter that the PA-2311-02A pulls SCL/SDA up to 3.3V (not 5V) on this harness
