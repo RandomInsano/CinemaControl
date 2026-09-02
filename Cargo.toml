@@ -5,6 +5,7 @@ members = [
     "cinectl",
     "cinectl-menubar",
     "firmware/emc1403",
+    "firmware/fan-control",
     "firmware/ina219",
     "protocol",
     "board-hid",
@@ -23,6 +24,10 @@ members = [
 # so they're plain default members alongside `cinectl` for host-side
 # building/testing rather than being pulled in only as `firmware` deps.
 #
+# `fan-control` is the same story, generic over `embedded-fans-async`'s
+# `Fan`/`RpmSense` traits instead of any of `firmware`'s own peripheral
+# types.
+#
 # `cinectl-menubar` is macOS-only (it drives an NSStatusItem) and is left out
 # of default-members for the same reason `firmware` is: a bare
 # `cargo build`/`check` shouldn't try and fail to build it on Linux.
@@ -33,6 +38,7 @@ members = [
 default-members = [
     "cinectl",
     "firmware/emc1403",
+    "firmware/fan-control",
     "firmware/ina219",
     "protocol",
     "board-hid",

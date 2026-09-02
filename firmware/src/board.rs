@@ -12,6 +12,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use mcu_hal::adc::{self, Adc};
 use mcu_hal::flash::{self, Flash};
+use mcu_hal::gpio::Pull;
 use mcu_hal::i2c::{self, I2c};
 use mcu_hal::pwm::{self, Pwm};
 use mcu_hal::usb::{self, Driver};
@@ -32,6 +33,20 @@ type BacklightSlice = peripherals::PWM_SLICE7;
 type BacklightPin = peripherals::PIN_15;
 pub type Backlight = Pwm<'static>;
 const BACKLIGHT_FREQUENCY_HZ: u32 = 13_000;
+
+// The fan's tach line needs its own PWM slice from the one driving its PWM
+// output: `Pwm::new_input`'s edge-counting mode reclocks the *whole* slice's
+// counter off the input pin, which would break PWM generation on that same
+// slice's other channel. GPIO6/9 land on different slices (3 and 4) for
+// exactly that reason — see `fan.rs`.
+type FanPwmSlice = peripherals::PWM_SLICE3;
+type FanPwmPin = peripherals::PIN_6;
+pub type FanPwmOutput = Pwm<'static>;
+const FAN_PWM_FREQUENCY_HZ: u32 = 25_000; // Intel 4-Wire PWM Fan spec, S2.1
+
+type FanTachSlice = peripherals::PWM_SLICE4;
+type FanTachPin = peripherals::PIN_9;
+pub type FanTachInput = Pwm<'static>;
 
 type SmbusPeripheral = peripherals::I2C0;
 type SmbusSclPin = peripherals::PIN_5;
@@ -68,6 +83,8 @@ bind_interrupts!(struct Irqs {
 pub struct Board {
     pub usb: UsbDriver,
     pub backlight: Backlight,
+    pub fan_pwm: FanPwmOutput,
+    pub fan_tach: FanTachInput,
     pub smbus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>,
     pub flash: BoardFlash,
     pub adc: ProcessorThermalAdc,
@@ -89,6 +106,8 @@ pub fn split() -> Board {
     Board {
         usb: Driver::new(p.USB, Irqs),
         backlight: backlight_pwm(p.PWM_SLICE7, p.PIN_15),
+        fan_pwm: fan_pwm(p.PWM_SLICE3, p.PIN_6),
+        fan_tach: fan_tach(p.PWM_SLICE4, p.PIN_9),
         smbus: SMBUS.init(Mutex::new(smbus_bus(p.I2C0, p.PIN_5, p.PIN_4))),
         flash,
         adc: Adc::new(p.ADC, Irqs, adc::Config::default()),
@@ -137,6 +156,30 @@ fn backlight_pwm(
     config.top = top;
 
     Pwm::new_output_b(slice, pin, config)
+}
+
+fn fan_pwm(slice: Peri<'static, FanPwmSlice>, pin: Peri<'static, FanPwmPin>) -> FanPwmOutput {
+    let divider: u8 = 1;
+    let top = (mcu_hal::clocks::clk_sys_freq() / (FAN_PWM_FREQUENCY_HZ * divider as u32)) as u16 - 1;
+
+    let mut config = pwm::Config::default();
+    config.divider = divider.into();
+    config.top = top;
+
+    Pwm::new_output_a(slice, pin, config)
+}
+
+fn fan_tach(slice: Peri<'static, FanTachSlice>, pin: Peri<'static, FanTachPin>) -> FanTachInput {
+    // Free-runs `top` (0xFFFF, `Config::default`) counts per tach edge;
+    // `fan.rs` samples it periodically and diffs against the last reading
+    // rather than wrapping it into an interrupt.
+    Pwm::new_input(
+        slice,
+        pin,
+        Pull::Up,
+        pwm::InputMode::RisingEdge,
+        pwm::Config::default(),
+    )
 }
 
 fn smbus_bus(

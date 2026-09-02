@@ -20,8 +20,10 @@ mcu-hal = { package = "embassy-rp", version = "0.10.0", features = ["rp2040", "t
 embassy-sync = { version = "0.8.0", features = ["defmt"] }
 embassy-time = { version = "0.5.1", features = ["defmt"] }
 embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt", "max-handler-count-4", "max-interface-count-4"] }
+embedded-fans-async = { version = "0.2.0", features = ["defmt"] }
 embedded-hal-async = "1.0.0"
 emc1403 = { path = "emc1403" }
+fan-control = { path = "fan-control" }
 ina219 = { path = "ina219" }
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 portable-atomic = { version = "1.15", features = ["critical-section"] }

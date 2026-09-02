@@ -2,6 +2,7 @@
 #![no_main]
 
 mod board;
+mod fan;
 mod hid;
 #[cfg(feature = "neopixel")]
 mod neopixel;
@@ -45,6 +46,9 @@ async fn main(spawner: Spawner) -> ! {
     // --- SMBus telemetry for the PA-2311-02A PSU ---
     spawner.spawn(smbus::ina219_task(p.smbus).unwrap());
     spawner.spawn(smbus::emc1403_task(p.smbus).unwrap());
+
+    // --- PID fan ramp + tach fail-safe ---
+    spawner.spawn(fan::task(p.fan_pwm, p.fan_tach).unwrap());
 
     // --- RP2040 on-die temperature ---
     spawner.spawn(processor_thermal::task(p.adc, p.processor_thermal_channel).unwrap());

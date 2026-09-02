@@ -1,0 +1,9 @@
+[package]
+name = "fan-control"
+version = "0.1.0"
+edition = "2024"
+description = "PID thermal ramp + tach fail-safe for embedded-fans-async fans"
+
+[dependencies]
+embedded-fans-async = "0.2.0"
+pid = "4.0.0"
