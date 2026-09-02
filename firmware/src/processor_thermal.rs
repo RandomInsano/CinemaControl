@@ -7,25 +7,28 @@ use embassy_sync::watch::Watch;
 use embassy_time::{Duration, Timer};
 use mcu_hal::adc;
 
-use protocol::ChipTemperature;
+use protocol::ProcessorThermalTelemetry;
 
-use crate::board::{ChipTempAdc, ChipTempChannel};
+use crate::board::{ProcessorThermalAdc, ProcessorThermalChannel};
 
 const REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 
-pub static CHIP_TEMPERATURE: Watch<CriticalSectionRawMutex, ChipTemperature, 1> =
-    Watch::new_with(ChipTemperature { decic: 0 });
+pub static PROCESSOR_THERMAL_TELEMETRY: Watch<
+    CriticalSectionRawMutex,
+    ProcessorThermalTelemetry,
+    1,
+> = Watch::new_with(ProcessorThermalTelemetry { decic: 0 });
 
 #[embassy_executor::task]
-pub async fn task(mut adc: ChipTempAdc, mut channel: ChipTempChannel) -> ! {
-    let mut last_sent = ChipTemperature::default();
+pub async fn task(mut adc: ProcessorThermalAdc, mut channel: ProcessorThermalChannel) -> ! {
+    let mut last_sent = ProcessorThermalTelemetry::default();
 
     loop {
-        match read_chip_temp_decic(&mut adc, &mut channel).await {
+        match read_processor_thermal_decic(&mut adc, &mut channel).await {
             Ok(decic) => {
-                let telemetry = ChipTemperature { decic };
+                let telemetry = ProcessorThermalTelemetry { decic };
                 if telemetry != last_sent {
-                    CHIP_TEMPERATURE.sender().send(telemetry);
+                    PROCESSOR_THERMAL_TELEMETRY.sender().send(telemetry);
                     last_sent = telemetry;
                 }
             }
@@ -35,9 +38,9 @@ pub async fn task(mut adc: ChipTempAdc, mut channel: ChipTempChannel) -> ! {
     }
 }
 
-async fn read_chip_temp_decic(
-    adc: &mut ChipTempAdc,
-    channel: &mut ChipTempChannel,
+async fn read_processor_thermal_decic(
+    adc: &mut ProcessorThermalAdc,
+    channel: &mut ProcessorThermalChannel,
 ) -> Result<i16, adc::Error> {
     let raw = adc.read(channel).await?;
 

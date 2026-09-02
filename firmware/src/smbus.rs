@@ -11,7 +11,7 @@ use emc1403::{Channel, ConversionRate, Emc1403};
 use ina219::Ina219;
 use mcu_hal::i2c;
 
-use protocol::{PowerTelemetry, ThermalTelemetry};
+use protocol::{PowerTelemetry, PowerThermalTelemetry};
 
 use crate::board::SmbusBus;
 use crate::shared_i2c::SharedI2c;
@@ -35,8 +35,8 @@ pub static POWER_TELEMETRY: Watch<CriticalSectionRawMutex, PowerTelemetry, 1> =
         power_mw: 0,
     });
 
-pub static THERMAL_TELEMETRY: Watch<CriticalSectionRawMutex, ThermalTelemetry, 1> =
-    Watch::new_with(ThermalTelemetry {
+pub static POWER_THERMAL_TELEMETRY: Watch<CriticalSectionRawMutex, PowerThermalTelemetry, 1> =
+    Watch::new_with(PowerThermalTelemetry {
         internal_decic: 0,
         external1_decic: 0,
     });
@@ -123,17 +123,17 @@ pub async fn emc1403_task(bus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>
 
     let refresh_interval = refresh_interval_for(EMC1403_RATE.period_us());
 
-    let mut last_sent = ThermalTelemetry::default();
+    let mut last_sent = PowerThermalTelemetry::default();
 
     loop {
-        match with_timeout(I2C_CYCLE_TIMEOUT, try_read_thermal(bus)).await {
+        match with_timeout(I2C_CYCLE_TIMEOUT, try_read_power_thermal(bus)).await {
             Ok(Ok((internal_decic, external1_decic))) => {
-                let telemetry = ThermalTelemetry {
+                let telemetry = PowerThermalTelemetry {
                     internal_decic,
                     external1_decic,
                 };
                 if telemetry != last_sent {
-                    THERMAL_TELEMETRY.sender().send(telemetry);
+                    POWER_THERMAL_TELEMETRY.sender().send(telemetry);
                     last_sent = telemetry;
                 }
             }
@@ -148,7 +148,7 @@ fn refresh_interval_for(conversion_us: u32) -> Duration {
     Duration::from_micros(conversion_us as u64) + Duration::from_millis(REFRESH_MARGIN_MS)
 }
 
-async fn try_read_thermal(
+async fn try_read_power_thermal(
     bus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>,
 ) -> Result<(i16, i16), emc1403::Error<i2c::Error>> {
     let mut sensor = Emc1403::new(SharedI2c::new(bus), EMC1403_ADDR);

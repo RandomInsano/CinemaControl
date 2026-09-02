@@ -2,10 +2,10 @@
 #![no_main]
 
 mod board;
-mod chip_temp;
 mod hid;
 #[cfg(feature = "neopixel")]
 mod neopixel;
+mod processor_thermal;
 mod pwm;
 mod shared_i2c;
 mod smbus;
@@ -35,8 +35,8 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(hid::usb_task(usb.usb).unwrap());
     spawner.spawn(hid::hid_report_task(usb.brightness_writer).unwrap());
     spawner.spawn(hid::power_report_task(usb.power_writer).unwrap());
-    spawner.spawn(hid::thermal_report_task(usb.thermal_writer).unwrap());
-    spawner.spawn(hid::chip_temp_report_task(usb.chip_temp_writer).unwrap());
+    spawner.spawn(hid::power_thermal_report_task(usb.power_thermal_writer).unwrap());
+    spawner.spawn(hid::processor_thermal_report_task(usb.processor_thermal_writer).unwrap());
 
     // --- Backlight PWM ---
     let backlight = pwm::init(p.backlight);
@@ -47,7 +47,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(smbus::emc1403_task(p.smbus).unwrap());
 
     // --- RP2040 on-die temperature ---
-    spawner.spawn(chip_temp::task(p.adc, p.chip_temp_channel).unwrap());
+    spawner.spawn(processor_thermal::task(p.adc, p.processor_thermal_channel).unwrap());
 
     // --- Brightness-mirroring NeoPixel (optional, "neopixel" feature) ---
     #[cfg(feature = "neopixel")]

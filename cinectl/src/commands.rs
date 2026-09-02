@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use hidapi::{HidApi, HidDevice};
 
 use protocol::{
-    BRIGHTNESS_REPORT_LEN, CHIP_TEMP_REPORT_LEN, ChipTemperature, POWER_REPORT_LEN,
-    PowerTelemetry, THERMAL_REPORT_LEN, ThermalTelemetry,
+    BRIGHTNESS_REPORT_LEN, POWER_REPORT_LEN, POWER_THERMAL_REPORT_LEN,
+    PROCESSOR_THERMAL_REPORT_LEN, PowerTelemetry, PowerThermalTelemetry, ProcessorThermalTelemetry,
 };
 
 use crate::device::Board;
@@ -44,9 +44,9 @@ pub fn set_brightness(api: &HidApi, board: &Board, value: u16) -> Result<()> {
 
 pub fn get_psu(api: &HidApi, board: &Board) -> Result<()> {
     let power = read_power(api, board).unwrap_or_default();
-    let thermal = read_thermal(api, board).unwrap_or_default();
-    let chip_temp = read_chip_temp(api, board).unwrap_or_default();
-    println!("{power}  {thermal}  {chip_temp}");
+    let power_thermal = read_power_thermal(api, board).unwrap_or_default();
+    let processor_thermal = read_processor_thermal(api, board).unwrap_or_default();
+    println!("{power}  {power_thermal}  {processor_thermal}");
     Ok(())
 }
 
@@ -70,30 +70,30 @@ fn read_power(api: &HidApi, board: &Board) -> Result<PowerTelemetry> {
     )
 }
 
-fn read_thermal(api: &HidApi, board: &Board) -> Result<ThermalTelemetry> {
+fn read_power_thermal(api: &HidApi, board: &Board) -> Result<PowerThermalTelemetry> {
     read_feature(
         api,
-        require_path(&board.thermal_path, "thermal")?,
-        THERMAL_REPORT_LEN,
+        require_path(&board.power_thermal_path, "thermal")?,
+        POWER_THERMAL_REPORT_LEN,
         "thermal",
-        |payload| ThermalTelemetry::from_bytes(payload.try_into().unwrap()),
+        |payload| PowerThermalTelemetry::from_bytes(payload.try_into().unwrap()),
     )
 }
 
-fn read_chip_temp(api: &HidApi, board: &Board) -> Result<ChipTemperature> {
+fn read_processor_thermal(api: &HidApi, board: &Board) -> Result<ProcessorThermalTelemetry> {
     read_feature(
         api,
-        require_path(&board.chip_temp_path, "chip temperature")?,
-        CHIP_TEMP_REPORT_LEN,
+        require_path(&board.processor_thermal_path, "chip temperature")?,
+        PROCESSOR_THERMAL_REPORT_LEN,
         "chip temperature",
-        |payload| ChipTemperature::from_bytes(payload.try_into().unwrap()),
+        |payload| ProcessorThermalTelemetry::from_bytes(payload.try_into().unwrap()),
     )
 }
 
 /// A board only needs to expose *some* interface to be discovered (see
 /// `device::discover`) — this is where a board missing one specific
-/// interface (e.g. older firmware without `chip_temp`) surfaces as a clear
-/// error instead of a HID open failure.
+/// interface (e.g. older firmware without `processor_thermal`) surfaces as a
+/// clear error instead of a HID open failure.
 fn require_path<'a>(path: &'a Option<CString>, label: &str) -> Result<&'a CStr> {
     path.as_deref()
         .with_context(|| format!("device has no {label} interface"))
@@ -121,8 +121,8 @@ fn feature_payload(buf: &[u8]) -> &[u8] {
 enum Update {
     Brightness(u16),
     Power(PowerTelemetry),
-    Thermal(ThermalTelemetry),
-    ChipTemp(ChipTemperature),
+    PowerThermal(PowerThermalTelemetry),
+    ProcessorThermal(ProcessorThermalTelemetry),
     Error(String),
 }
 
@@ -143,17 +143,29 @@ pub fn watch(api: &HidApi, board: &Board, combined: bool) -> Result<()> {
             Update::Power(PowerTelemetry::from_bytes(bytes.try_into().unwrap()))
         });
     }
-    if let Some(path) = board.thermal_path.as_deref() {
-        let thermal_device = open(api, path)?;
-        spawn_reader(thermal_device, tx.clone(), THERMAL_REPORT_LEN, |bytes| {
-            Update::Thermal(ThermalTelemetry::from_bytes(bytes.try_into().unwrap()))
-        });
+    if let Some(path) = board.power_thermal_path.as_deref() {
+        let power_thermal_device = open(api, path)?;
+        spawn_reader(
+            power_thermal_device,
+            tx.clone(),
+            POWER_THERMAL_REPORT_LEN,
+            |bytes| {
+                Update::PowerThermal(PowerThermalTelemetry::from_bytes(bytes.try_into().unwrap()))
+            },
+        );
     }
-    if let Some(path) = board.chip_temp_path.as_deref() {
-        let chip_temp_device = open(api, path)?;
-        spawn_reader(chip_temp_device, tx.clone(), CHIP_TEMP_REPORT_LEN, |bytes| {
-            Update::ChipTemp(ChipTemperature::from_bytes(bytes.try_into().unwrap()))
-        });
+    if let Some(path) = board.processor_thermal_path.as_deref() {
+        let processor_thermal_device = open(api, path)?;
+        spawn_reader(
+            processor_thermal_device,
+            tx.clone(),
+            PROCESSOR_THERMAL_REPORT_LEN,
+            |bytes| {
+                Update::ProcessorThermal(ProcessorThermalTelemetry::from_bytes(
+                    bytes.try_into().unwrap(),
+                ))
+            },
+        );
     }
     drop(tx);
 
@@ -169,8 +181,8 @@ fn watch_separate(rx: mpsc::Receiver<Update>) -> Result<()> {
         match update {
             Update::Brightness(v) => println!("brightness: {v:4}"),
             Update::Power(p) => println!("power: {p}"),
-            Update::Thermal(t) => println!("thermal: {t}"),
-            Update::ChipTemp(c) => println!("chip temp: {c}"),
+            Update::PowerThermal(t) => println!("thermal: {t}"),
+            Update::ProcessorThermal(c) => println!("chip temp: {c}"),
             Update::Error(e) => println!("{e}"),
         }
     }
@@ -180,22 +192,22 @@ fn watch_separate(rx: mpsc::Receiver<Update>) -> Result<()> {
 fn watch_combined(api: &HidApi, board: &Board, rx: mpsc::Receiver<Update>) -> Result<()> {
     let mut brightness = read_brightness(api, board)?;
     let mut power = read_power(api, board).unwrap_or_default();
-    let mut thermal = read_thermal(api, board).unwrap_or_default();
-    let mut chip_temp = read_chip_temp(api, board).unwrap_or_default();
-    println!("brightness: {brightness:4}  {power}  {thermal}  {chip_temp}");
+    let mut power_thermal = read_power_thermal(api, board).unwrap_or_default();
+    let mut processor_thermal = read_processor_thermal(api, board).unwrap_or_default();
+    println!("brightness: {brightness:4}  {power}  {power_thermal}  {processor_thermal}");
 
     for update in rx {
         match update {
             Update::Brightness(v) => brightness = v,
             Update::Power(p) => power = p,
-            Update::Thermal(t) => thermal = t,
-            Update::ChipTemp(c) => chip_temp = c,
+            Update::PowerThermal(t) => power_thermal = t,
+            Update::ProcessorThermal(c) => processor_thermal = c,
             Update::Error(e) => {
                 println!("{e}");
                 continue;
             }
         }
-        println!("brightness: {brightness:4}  {power}  {thermal}  {chip_temp}");
+        println!("brightness: {brightness:4}  {power}  {power_thermal}  {processor_thermal}");
     }
     Ok(())
 }

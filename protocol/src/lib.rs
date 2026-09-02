@@ -14,8 +14,8 @@ pub const MAX_BRIGHTNESS: u16 = 1023;
 
 pub const BRIGHTNESS_REPORT_LEN: usize = 2;
 pub const POWER_REPORT_LEN: usize = 8;
-pub const THERMAL_REPORT_LEN: usize = 4;
-pub const CHIP_TEMP_REPORT_LEN: usize = 2;
+pub const POWER_THERMAL_REPORT_LEN: usize = 4;
+pub const PROCESSOR_THERMAL_REPORT_LEN: usize = 2;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct PowerTelemetry {
@@ -57,21 +57,21 @@ impl fmt::Display for PowerTelemetry {
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub struct ThermalTelemetry {
+pub struct PowerThermalTelemetry {
     pub internal_decic: i16,
     pub external1_decic: i16,
 }
 
-impl ThermalTelemetry {
-    pub fn to_bytes(self) -> [u8; THERMAL_REPORT_LEN] {
-        let mut buf = [0u8; THERMAL_REPORT_LEN];
+impl PowerThermalTelemetry {
+    pub fn to_bytes(self) -> [u8; POWER_THERMAL_REPORT_LEN] {
+        let mut buf = [0u8; POWER_THERMAL_REPORT_LEN];
         Report::new(&mut buf)
             .field(self.internal_decic)
             .field(self.external1_decic);
         buf
     }
 
-    pub fn from_bytes(bytes: [u8; THERMAL_REPORT_LEN]) -> Self {
+    pub fn from_bytes(bytes: [u8; POWER_THERMAL_REPORT_LEN]) -> Self {
         Self {
             internal_decic: i16::from_le_bytes([bytes[0], bytes[1]]),
             external1_decic: i16::from_le_bytes([bytes[2], bytes[3]]),
@@ -79,7 +79,7 @@ impl ThermalTelemetry {
     }
 }
 
-impl fmt::Display for ThermalTelemetry {
+impl fmt::Display for PowerThermalTelemetry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -91,25 +91,25 @@ impl fmt::Display for ThermalTelemetry {
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub struct ChipTemperature {
+pub struct ProcessorThermalTelemetry {
     pub decic: i16,
 }
 
-impl ChipTemperature {
-    pub fn to_bytes(self) -> [u8; CHIP_TEMP_REPORT_LEN] {
-        let mut buf = [0u8; CHIP_TEMP_REPORT_LEN];
+impl ProcessorThermalTelemetry {
+    pub fn to_bytes(self) -> [u8; PROCESSOR_THERMAL_REPORT_LEN] {
+        let mut buf = [0u8; PROCESSOR_THERMAL_REPORT_LEN];
         Report::new(&mut buf).field(self.decic);
         buf
     }
 
-    pub fn from_bytes(bytes: [u8; CHIP_TEMP_REPORT_LEN]) -> Self {
+    pub fn from_bytes(bytes: [u8; PROCESSOR_THERMAL_REPORT_LEN]) -> Self {
         Self {
             decic: i16::from_le_bytes(bytes),
         }
     }
 }
 
-impl fmt::Display for ChipTemperature {
+impl fmt::Display for ProcessorThermalTelemetry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "chip {:.1}°C", f32::from(self.decic) / 10.0)
     }

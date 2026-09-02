@@ -12,19 +12,20 @@ use hidapi::HidApi;
 
 const BRIGHTNESS_INTERFACE: i32 = 0;
 const POWER_INTERFACE: i32 = 1;
-const THERMAL_INTERFACE: i32 = 2;
-const CHIP_TEMP_INTERFACE: i32 = 3;
+const POWER_THERMAL_INTERFACE: i32 = 2;
+const PROCESSOR_THERMAL_INTERFACE: i32 = 3;
 
 /// Each path is `None` when the connected board's firmware predates that
-/// interface (e.g. `chip_temp_path` on a board flashed before it existed) —
-/// a board only needs to expose *some* interface to be discovered at all.
+/// interface (e.g. `processor_thermal_path` on a board flashed before it
+/// existed) — a board only needs to expose *some* interface to be
+/// discovered at all.
 #[derive(Clone)]
 pub struct Board {
     pub serial: String,
     pub brightness_path: Option<CString>,
     pub power_path: Option<CString>,
-    pub thermal_path: Option<CString>,
-    pub chip_temp_path: Option<CString>,
+    pub power_thermal_path: Option<CString>,
+    pub processor_thermal_path: Option<CString>,
 }
 
 type PartialBoard = (
@@ -47,8 +48,8 @@ pub fn discover(api: &HidApi) -> Result<Vec<Board>> {
         match info.interface_number() {
             BRIGHTNESS_INTERFACE => slot.0 = Some(info.path().to_owned()),
             POWER_INTERFACE => slot.1 = Some(info.path().to_owned()),
-            THERMAL_INTERFACE => slot.2 = Some(info.path().to_owned()),
-            CHIP_TEMP_INTERFACE => slot.3 = Some(info.path().to_owned()),
+            POWER_THERMAL_INTERFACE => slot.2 = Some(info.path().to_owned()),
+            PROCESSOR_THERMAL_INTERFACE => slot.3 = Some(info.path().to_owned()),
             other => bail!("unexpected interface number {other} on a CinemaControl device"),
         }
     }
@@ -56,12 +57,17 @@ pub fn discover(api: &HidApi) -> Result<Vec<Board>> {
     Ok(by_serial
         .into_iter()
         .map(
-            |(serial, (brightness_path, power_path, thermal_path, chip_temp_path))| Board {
+            |(
                 serial,
-                brightness_path,
-                power_path,
-                thermal_path,
-                chip_temp_path,
+                (brightness_path, power_path, power_thermal_path, processor_thermal_path),
+            )| {
+                Board {
+                    serial,
+                    brightness_path,
+                    power_path,
+                    power_thermal_path,
+                    processor_thermal_path,
+                }
             },
         )
         .collect())

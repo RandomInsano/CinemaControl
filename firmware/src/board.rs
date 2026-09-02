@@ -44,8 +44,8 @@ type FlashDma = peripherals::DMA_CH0;
 pub const FLASH_SIZE: usize = 2 * 1024 * 1024;
 pub type BoardFlash = Flash<'static, FlashPeripheral, flash::Async, FLASH_SIZE>;
 
-pub type ChipTempAdc = Adc<'static, adc::Async>;
-pub type ChipTempChannel = adc::Channel<'static>;
+pub type ProcessorThermalAdc = Adc<'static, adc::Async>;
+pub type ProcessorThermalChannel = adc::Channel<'static>;
 
 #[cfg(feature = "neopixel")]
 type NeopixelPeripheral = peripherals::PIO0;
@@ -70,8 +70,8 @@ pub struct Board {
     pub backlight: Backlight,
     pub smbus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>,
     pub flash: BoardFlash,
-    pub adc: ChipTempAdc,
-    pub chip_temp_channel: ChipTempChannel,
+    pub adc: ProcessorThermalAdc,
+    pub processor_thermal_channel: ProcessorThermalChannel,
     #[cfg(feature = "neopixel")]
     pub neopixel: Neopixel,
     pub unique_id: &'static str,
@@ -92,7 +92,7 @@ pub fn split() -> Board {
         smbus: SMBUS.init(Mutex::new(smbus_bus(p.I2C0, p.PIN_5, p.PIN_4))),
         flash,
         adc: Adc::new(p.ADC, Irqs, adc::Config::default()),
-        chip_temp_channel: adc::Channel::new_temp_sensor(p.ADC_TEMP_SENSOR),
+        processor_thermal_channel: adc::Channel::new_temp_sensor(p.ADC_TEMP_SENSOR),
         #[cfg(feature = "neopixel")]
         neopixel: neopixel_ws2812(p.PIO0, p.DMA_CH1, p.PIN_16),
         unique_id: hex_encode(raw_id),
