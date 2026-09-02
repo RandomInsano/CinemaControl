@@ -111,12 +111,12 @@ pub async fn task(pwm: FanPwmOutput, tach: FanTachInput) -> ! {
         TACH_FAIL_TIMEOUT,
     );
 
-    let mut thermal = POWER_THERMAL_TELEMETRY.receiver().unwrap();
     let mut last_state = None;
     let dt = StdDuration::from_millis(TICK.as_millis());
 
     loop {
-        let temp_c = f32::from(thermal.get().await.external1_decic) / 10.0;
+        let telemetry = POWER_THERMAL_TELEMETRY.try_get().unwrap();
+        let temp_c = f32::from(telemetry.external1_decic) / 10.0;
 
         let state = controller.update(dt, temp_c).await.unwrap();
         if last_state != Some(state) && state == FanState::Failed {

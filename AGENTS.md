@@ -132,6 +132,21 @@ a receiver's `changed`) — see the doc comments on those statics. This is why
 or apply a value only when something actually changes, instead of polling
 on a `Timer`.
 
+Before wiring up a new consumer of any of these statics, check its `N`
+(`Watch<_, _, N>`) against how many receivers already exist —
+`POWER_TELEMETRY`/`POWER_THERMAL_TELEMETRY`/`PROCESSOR_THERMAL_TELEMETRY` are
+all `N = 1`, already spoken for by their `hid.rs` report task. A new task
+calling `.receiver()` on one of these gets `None` once every slot is taken,
+and `.unwrap()`-ing that panics on its first poll — which, on this
+single-threaded executor, freezes every other task too (USB included), not
+just the new one. This has happened more than once. A consumer that only
+needs the latest value on its own cadence (not to await a change) should
+call `try_get()` on the static directly instead of taking a receiver at all
+— see `fan.rs`'s use of `POWER_THERMAL_TELEMETRY.try_get()`, paced by its own
+`Timer`, same idiom as `hid.rs`'s one-shot feature-report reads. Only bump
+`N` when a consumer genuinely needs to await a change; if so, count every
+receiver it needs to cover, not just the new one.
+
 ## Build
 
 Firmware always needs `cd firmware` first: `cargo build --release` there
