@@ -26,7 +26,7 @@ Requires:       systemd-udev
 %install
 install -Dm755 %{workspace_dir}/target/release/cinectl %{buildroot}%{_bindir}/cinectl
 strip %{buildroot}%{_bindir}/cinectl
-install -Dm644 %{workspace_dir}/cinectl/99-cinemacontrol.rules %{buildroot}%{_udevrulesdir}/99-cinemacontrol.rules
+install -Dm644 %{workspace_dir}/cinectl/packaging/99-cinemacontrol.rules %{buildroot}%{_udevrulesdir}/99-cinemacontrol.rules
 install -Dm644 %{workspace_dir}/cinectl/README.md %{buildroot}%{_docdir}/%{name}/README.md
 
 %files
