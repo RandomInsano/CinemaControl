@@ -212,6 +212,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "board-hid"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hidapi",
+ "protocol",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -302,6 +311,7 @@ name = "cinectl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "board-hid",
  "clap",
  "hidapi",
  "protocol",
@@ -312,6 +322,7 @@ name = "cinectl-menubar"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "board-hid",
  "hidapi",
  "objc2",
  "objc2-app-kit",

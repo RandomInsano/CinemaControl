@@ -1,0 +1,14 @@
+[package]
+name = "board-hid"
+version = "0.1.0"
+edition = "2024"
+description = "Host-side HID transport for CinemaControl boards — device discovery and feature-report I/O, shared by cinectl and cinectl-menubar."
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.104"
+hidapi = "2.6.7"
+protocol = { path = "../protocol" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+hidapi = { version = "2.6.7", features = ["macos-shared-device"] }

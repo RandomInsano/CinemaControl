@@ -12,40 +12,37 @@
 //! cause of several rounds of slider jumpiness — a feature-report read/set
 //! is a synchronous request/response, not a periodic push.
 //!
-//! `device.rs` and `report.rs` are copies of the same-named modules in
-//! `cinectl` rather than a shared dependency — with only this one other
-//! caller so far, extracting a lib crate would be guessing at a shape for
-//! it. Once this settles, pull the HID transport logic into a crate both
-//! binaries depend on.
+//! Board discovery, HID transport, and the report wire format live in
+//! `board-hid`, shared with `cinectl`.
 
-mod device;
 mod login_item;
-mod report;
 mod ui;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::{CStr, CString, c_void};
+use std::ffi::c_void;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use board_hid::device::{self, Board};
+use board_hid::report;
+use board_hid::telemetry::{
+    read_brightness, read_power, read_power_thermal, read_processor_thermal,
+};
+use board_hid::transport::{open, require_path};
 use hidapi::{HidApi, HidDevice};
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSMenu;
-use protocol::{
-    BRIGHTNESS_REPORT_LEN, MAX_BRIGHTNESS, POWER_REPORT_LEN, POWER_THERMAL_REPORT_LEN,
-    PROCESSOR_THERMAL_REPORT_LEN, PowerTelemetry, PowerThermalTelemetry, ProcessorThermalTelemetry,
-};
+use protocol::{MAX_BRIGHTNESS, PowerTelemetry, PowerThermalTelemetry, ProcessorThermalTelemetry};
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tray_icon::menu::{CheckMenuItem, ContextMenu, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
 
-use device::Board;
 use ui::board_menu::BoardMenu;
 use ui::icon;
 use ui::menu_delegate::MenuDelegate;
@@ -397,97 +394,4 @@ fn write_brightness(device: &HidDevice, value: u16) -> Result<()> {
     device
         .send_feature_report(&report)
         .context("writing brightness feature report")
-}
-
-fn read_brightness(api: &HidApi, board: &Board) -> Result<u16> {
-    read_feature(
-        api,
-        require_path(&board.brightness_path, "brightness")?,
-        BRIGHTNESS_REPORT_LEN,
-        "brightness",
-        |payload| {
-            report::brightness_from_bytes(
-                payload
-                    .try_into()
-                    .expect("read_feature always hands decode() exactly report_len bytes"),
-            )
-        },
-    )
-}
-
-fn read_power(api: &HidApi, board: &Board) -> Result<PowerTelemetry> {
-    read_feature(
-        api,
-        require_path(&board.power_path, "power")?,
-        POWER_REPORT_LEN,
-        "power",
-        |payload| {
-            PowerTelemetry::from_bytes(
-                payload
-                    .try_into()
-                    .expect("read_feature always hands decode() exactly report_len bytes"),
-            )
-        },
-    )
-}
-
-fn read_power_thermal(api: &HidApi, board: &Board) -> Result<PowerThermalTelemetry> {
-    read_feature(
-        api,
-        require_path(&board.power_thermal_path, "thermal")?,
-        POWER_THERMAL_REPORT_LEN,
-        "thermal",
-        |payload| {
-            PowerThermalTelemetry::from_bytes(
-                payload
-                    .try_into()
-                    .expect("read_feature always hands decode() exactly report_len bytes"),
-            )
-        },
-    )
-}
-
-fn read_processor_thermal(api: &HidApi, board: &Board) -> Result<ProcessorThermalTelemetry> {
-    read_feature(
-        api,
-        require_path(&board.processor_thermal_path, "chip temperature")?,
-        PROCESSOR_THERMAL_REPORT_LEN,
-        "chip temperature",
-        |payload| {
-            ProcessorThermalTelemetry::from_bytes(
-                payload
-                    .try_into()
-                    .expect("read_feature always hands decode() exactly report_len bytes"),
-            )
-        },
-    )
-}
-
-/// A board only needs to expose *some* interface to be discovered (see
-/// `device::discover`) — this is where a board missing one specific
-/// interface (e.g. older firmware without `processor_thermal`) surfaces as a
-/// clear error instead of a HID open failure.
-fn require_path<'a>(path: &'a Option<CString>, label: &str) -> Result<&'a CStr> {
-    path.as_deref()
-        .with_context(|| format!("device has no {label} interface"))
-}
-
-fn read_feature<T>(
-    api: &HidApi,
-    path: &CStr,
-    report_len: usize,
-    label: &str,
-    decode: impl FnOnce(&[u8]) -> T,
-) -> Result<T> {
-    let device = open(api, path)?;
-    let mut buf = vec![0u8; report_len + 1];
-    device
-        .get_feature_report(&mut buf)
-        .with_context(|| format!("reading {label} feature report"))?;
-    Ok(decode(&buf[1..]))
-}
-
-fn open(api: &HidApi, path: &CStr) -> Result<HidDevice> {
-    api.open_path(path)
-        .with_context(|| format!("opening HID interface {path:?}"))
 }

@@ -2,10 +2,9 @@
 //! query, and watch a board's brightness and PSU telemetry over USB HID.
 
 mod commands;
-mod device;
-mod report;
 
 use anyhow::{Context, Result};
+use board_hid::device;
 use clap::{Parser, Subcommand};
 use hidapi::HidApi;
 

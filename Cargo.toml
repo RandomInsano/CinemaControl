@@ -7,6 +7,7 @@ members = [
     "firmware/emc1403",
     "firmware/ina219",
     "protocol",
+    "board-hid",
 ]
 # `firmware` is `no_std`/`no_main` and only builds for `thumbv6m-none-eabi`
 # (pinned in `firmware/.cargo/config.toml`), which only applies when cargo is
@@ -25,7 +26,17 @@ members = [
 # `cinectl-menubar` is macOS-only (it drives an NSStatusItem) and is left out
 # of default-members for the same reason `firmware` is: a bare
 # `cargo build`/`check` shouldn't try and fail to build it on Linux.
-default-members = ["cinectl", "firmware/emc1403", "firmware/ina219", "protocol"]
+#
+# `board-hid` is `cinectl`'s and `cinectl-menubar`'s shared host-side HID
+# transport (board discovery, feature-report read/write) — cross-platform
+# like `cinectl` itself, so it's a default member too.
+default-members = [
+    "cinectl",
+    "firmware/emc1403",
+    "firmware/ina219",
+    "protocol",
+    "board-hid",
+]
 
 # Cargo ignores [profile.*] in member manifests — these must live at the
 # workspace root, and apply to every member. `firmware` needs the aggressive

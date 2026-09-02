@@ -1,17 +1,19 @@
-use std::ffi::{CStr, CString};
 use std::sync::mpsc;
 use std::thread;
 
 use anyhow::{Context, Result};
 use hidapi::{HidApi, HidDevice};
 
+use board_hid::device::Board;
+use board_hid::report;
+use board_hid::telemetry::{
+    read_brightness, read_power, read_power_thermal, read_processor_thermal,
+};
+use board_hid::transport::{open, require_path};
 use protocol::{
     BRIGHTNESS_REPORT_LEN, POWER_REPORT_LEN, POWER_THERMAL_REPORT_LEN,
     PROCESSOR_THERMAL_REPORT_LEN, PowerTelemetry, PowerThermalTelemetry, ProcessorThermalTelemetry,
 };
-
-use crate::device::Board;
-use crate::report;
 
 pub fn list(boards: &[Board]) -> Result<()> {
     if boards.is_empty() {
@@ -37,7 +39,7 @@ pub fn set_brightness(api: &HidApi, board: &Board, value: u16) -> Result<()> {
         .context("writing brightness feature report")?;
     println!(
         "brightness set to {}",
-        report::brightness_from_bytes(feature_payload(&report).try_into().unwrap())
+        report::brightness_from_bytes(report[1..].try_into().unwrap())
     );
     Ok(())
 }
@@ -48,74 +50,6 @@ pub fn get_psu(api: &HidApi, board: &Board) -> Result<()> {
     let processor_thermal = read_processor_thermal(api, board).unwrap_or_default();
     println!("{power}  {power_thermal}  {processor_thermal}");
     Ok(())
-}
-
-fn read_brightness(api: &HidApi, board: &Board) -> Result<u16> {
-    read_feature(
-        api,
-        require_path(&board.brightness_path, "brightness")?,
-        BRIGHTNESS_REPORT_LEN,
-        "brightness",
-        |payload| report::brightness_from_bytes(payload.try_into().unwrap()),
-    )
-}
-
-fn read_power(api: &HidApi, board: &Board) -> Result<PowerTelemetry> {
-    read_feature(
-        api,
-        require_path(&board.power_path, "power")?,
-        POWER_REPORT_LEN,
-        "power",
-        |payload| PowerTelemetry::from_bytes(payload.try_into().unwrap()),
-    )
-}
-
-fn read_power_thermal(api: &HidApi, board: &Board) -> Result<PowerThermalTelemetry> {
-    read_feature(
-        api,
-        require_path(&board.power_thermal_path, "thermal")?,
-        POWER_THERMAL_REPORT_LEN,
-        "thermal",
-        |payload| PowerThermalTelemetry::from_bytes(payload.try_into().unwrap()),
-    )
-}
-
-fn read_processor_thermal(api: &HidApi, board: &Board) -> Result<ProcessorThermalTelemetry> {
-    read_feature(
-        api,
-        require_path(&board.processor_thermal_path, "chip temperature")?,
-        PROCESSOR_THERMAL_REPORT_LEN,
-        "chip temperature",
-        |payload| ProcessorThermalTelemetry::from_bytes(payload.try_into().unwrap()),
-    )
-}
-
-/// A board only needs to expose *some* interface to be discovered (see
-/// `device::discover`) — this is where a board missing one specific
-/// interface (e.g. older firmware without `processor_thermal`) surfaces as a
-/// clear error instead of a HID open failure.
-fn require_path<'a>(path: &'a Option<CString>, label: &str) -> Result<&'a CStr> {
-    path.as_deref()
-        .with_context(|| format!("device has no {label} interface"))
-}
-
-fn read_feature<T>(
-    api: &HidApi,
-    path: &CStr,
-    report_len: usize,
-    label: &str,
-    decode: impl FnOnce(&[u8]) -> T,
-) -> Result<T> {
-    let device = open(api, path)?;
-    let mut buf = vec![0u8; report_len + 1];
-    device
-        .get_feature_report(&mut buf)
-        .with_context(|| format!("reading {label} feature report"))?;
-    Ok(decode(feature_payload(&buf)))
-}
-
-fn feature_payload(buf: &[u8]) -> &[u8] {
-    &buf[1..]
 }
 
 enum Update {
@@ -234,9 +168,4 @@ fn spawn_reader(
             }
         }
     });
-}
-
-fn open(api: &HidApi, path: &std::ffi::CStr) -> Result<HidDevice> {
-    api.open_path(path)
-        .with_context(|| format!("opening HID interface {path:?}"))
 }

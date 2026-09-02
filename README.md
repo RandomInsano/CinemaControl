@@ -21,6 +21,9 @@ Shared between them:
 - **`protocol/`** — `no_std` crate with the USB vendor/product IDs, report
   lengths, and the `PowerTelemetry`/`ThermalTelemetry` wire structs both
   sides use.
+- **`board-hid/`** — host-only crate with the USB HID transport shared by
+  `cinectl` and the macOS menu bar companion (`cinectl-menubar/`): board
+  discovery and feature-report read/write on top of `hidapi`.
 
 ## Drivers
 

@@ -12,10 +12,24 @@ built on the `Report` byte-buffer builder in `protocol/src/hid_tools.rs`) and
 `Display` impls (used by `cinectl`; unused but harmless in `firmware`, which
 logs via `defmt` instead) — and that `Report` builder itself, for anything
 that needs to build a HID report by hand (`hid.rs`'s brightness report,
-which has no struct of its own). `firmware/src/smbus.rs` and
-`cinectl/src/report.rs` both just import these rather than defining their own
-copies. Everything below this point is `firmware`-specific unless a section
-says otherwise.
+which has no struct of its own). `firmware/src/smbus.rs` imports these
+rather than defining its own copies. Since `protocol` is `no_std` (built for
+`firmware` too), it only holds things that don't need `std` — anything
+host-only lives in `board-hid/` instead (see below). Everything below this
+point is `firmware`-specific unless a section says otherwise.
+
+`board-hid/` is a `std` crate holding the host-side HID transport that
+`cinectl` and `cinectl-menubar` both need: `device::discover` (enumerating
+connected boards by `protocol::VENDOR_ID`/`PRODUCT_ID` and grouping their
+four interfaces by USB serial number into a `Board`), `report` (the
+brightness report's byte layout — the `PowerTelemetry`-style structs'
+encoding lives in `protocol` since `firmware` needs it too, but brightness's
+doesn't), `transport` (`open`/`require_path`/`read_feature`, the
+feature-report request/response plumbing on top of `hidapi`), and
+`telemetry` (one-shot `read_brightness`/`read_power`/`read_power_thermal`/
+`read_processor_thermal`, each a `transport::read_feature` call for one of a
+`Board`'s interfaces). Both binaries depend on it rather than keeping their
+own copies.
 
 ## Comments
 
@@ -151,16 +165,17 @@ list|get-brightness|set-brightness|get-psu|watch`, via `hidapi`. The
 `[target.'cfg(target_os = "macos")'.dependencies]` table in
 `cinectl/Cargo.toml`, not the main `[dependencies]` table, since it only
 affects macOS code paths inside `hidapi` itself. `cinectl` depends on
-`protocol/` for everything covered above; `cinectl/src/report.rs` now just
-re-exports `protocol`'s telemetry structs plus the handful of
-brightness/report-length helpers that don't belong in a `no_std` crate
-(`brightness_from_bytes`, `brightness_feature_report`).
+`protocol/` for the wire structs/IDs and on `board-hid/` for device discovery
+and HID transport (see above) — it has no `device.rs` or `report.rs` of its
+own. Boards are ordered by USB serial number, which is unique per board out of
+the box (see `board::unique_id` above), so no provisioning workflow is needed
+here.
 
-`cinectl/src/device.rs` groups each board's two HID interfaces (brightness +
-PSU) and orders boards by USB serial number — which is unique per board out
-of the box (see `board::unique_id` above), so no provisioning workflow is
-needed here.
+`cinectl-menubar` depends on the same `board-hid/` crate for discovery and
+transport; its own code is just the menu bar UI on top.
 
 ## Research
 
-When trying to investigate how a particlar crate works, use `cargo add` and build the documentation with `cargo build` to use a local version of the documentation instead of fetching from the web.
+When trying to investigate how a particlar crate works, use `cargo add` and
+build the documentation with `cargo build` to use a local version of the
+documentation instead of fetching from the web.
