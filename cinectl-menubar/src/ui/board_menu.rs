@@ -22,7 +22,8 @@ pub struct BoardMenu {
     pub item: Retained<NSMenuItem>,
     brightness_item: Retained<NSMenuItem>,
     power_item: Retained<NSMenuItem>,
-    thermal_item: Retained<NSMenuItem>,
+    power_thermal_item: Retained<NSMenuItem>,
+    processor_thermal_item: Retained<NSMenuItem>,
     pub slider: BrightnessSlider,
 }
 
@@ -31,7 +32,8 @@ impl BoardMenu {
         serial: &str,
         brightness_text: &str,
         power_text: &str,
-        thermal_text: &str,
+        power_thermal_text: &str,
+        processor_thermal_text: &str,
         initial_percent: u32,
     ) -> Self {
         let mtm = MainThreadMarker::new().expect("must run on the main thread");
@@ -45,10 +47,12 @@ impl BoardMenu {
 
         let brightness_item = label_item(mtm, brightness_text);
         let power_item = label_item(mtm, power_text);
-        let thermal_item = label_item(mtm, thermal_text);
+        let power_thermal_item = label_item(mtm, power_thermal_text);
+        let processor_thermal_item = label_item(mtm, processor_thermal_text);
         submenu.addItem(&brightness_item);
         submenu.addItem(&power_item);
-        submenu.addItem(&thermal_item);
+        submenu.addItem(&power_thermal_item);
+        submenu.addItem(&processor_thermal_item);
 
         // Inserted after `brightness_item` (index 0), ahead of power/thermal.
         let slider = BrightnessSlider::insert(
@@ -61,7 +65,8 @@ impl BoardMenu {
             item,
             brightness_item,
             power_item,
-            thermal_item,
+            power_thermal_item,
+            processor_thermal_item,
             slider,
         }
     }
@@ -74,8 +79,13 @@ impl BoardMenu {
         self.power_item.setTitle(&NSString::from_str(text));
     }
 
-    pub fn set_thermal_text(&self, text: &str) {
-        self.thermal_item.setTitle(&NSString::from_str(text));
+    pub fn set_power_thermal_text(&self, text: &str) {
+        self.power_thermal_item.setTitle(&NSString::from_str(text));
+    }
+
+    pub fn set_processor_thermal_text(&self, text: &str) {
+        self.processor_thermal_item
+            .setTitle(&NSString::from_str(text));
     }
 }
 

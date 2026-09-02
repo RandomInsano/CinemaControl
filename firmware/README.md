@@ -45,6 +45,16 @@ To only build, without a probe connected:
 cargo build --release
 ```
 
+### NeoPixel (optional)
+
+The `neopixel` feature drives a WS2812 on GPIO16 (see `WIRING.md`) that
+mirrors backlight brightness — the RP2040-Zero's onboard LED, or an external
+one wired to GPIO16 on a Pico:
+
+```sh
+cargo run --release --features neopixel
+```
+
 ## Flashing without a debug probe (BOOTSEL/UF2)
 
 The RP2040 has a built-in USB bootloader, so a probe isn't strictly required

@@ -1,6 +1,6 @@
-//! USB HID: VESA/USB Monitor Control Class brightness control, plus two
+//! USB HID: VESA/USB Monitor Control Class brightness control, plus three
 //! separate Power Device interfaces for PSU telemetry (voltage/current/power,
-//! temperature).
+//! temperature) and a fourth for the RP2040's own die temperature.
 
 use defmt::warn;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -16,9 +16,10 @@ use static_cell::StaticCell;
 use protocol::Report;
 
 use crate::board::UsbDriver;
-use crate::smbus::{POWER_TELEMETRY, THERMAL_TELEMETRY};
+use crate::processor_thermal::PROCESSOR_THERMAL_TELEMETRY;
+use crate::smbus::{POWER_TELEMETRY, POWER_THERMAL_TELEMETRY};
 
-pub static BRIGHTNESS: Watch<CriticalSectionRawMutex, u16, 3> = Watch::new_with(512);
+pub static BRIGHTNESS: Watch<CriticalSectionRawMutex, u16, 4> = Watch::new_with(512);
 
 pub fn restore_brightness(value: u16) {
     BRIGHTNESS
@@ -80,7 +81,7 @@ const POWER_REPORT_DESCRIPTOR: &[u8] = &[
 
 /// HID Power Device, Usage Page 0x84, Usage 0x05 "PowerSupply".
 #[rustfmt::skip]
-const THERMAL_REPORT_DESCRIPTOR: &[u8] = &[
+const POWER_THERMAL_REPORT_DESCRIPTOR: &[u8] = &[
     0x05, 0x84,       // Usage Page (Power Device)
     0x09, 0x05,       // Usage (PowerSupply)
     0xA1, 0x01,       // Collection (Application)
@@ -94,6 +95,25 @@ const THERMAL_REPORT_DESCRIPTOR: &[u8] = &[
     0x81, 0x02,       //   Input (Data,Var,Abs)
     0x09, 0x36,       //   Usage (Temperature) -- Internal Diode
     0x09, 0x36,       //   Usage (Temperature) -- External Diode 1
+    0xB1, 0x02,       //   Feature (Data,Var,Abs)
+
+    0xC0,             // End Collection
+];
+
+/// HID Power Device, Usage Page 0x84, Usage 0x05 "PowerSupply".
+#[rustfmt::skip]
+const PROCESSOR_THERMAL_REPORT_DESCRIPTOR: &[u8] = &[
+    0x05, 0x84,       // Usage Page (Power Device)
+    0x09, 0x05,       // Usage (PowerSupply)
+    0xA1, 0x01,       // Collection (Application)
+
+    0x75, 0x10,       //   Report Size (16)
+    0x95, 0x01,       //   Report Count (1)
+    0x16, 0x70, 0xFE, //   Logical Minimum (-400)
+    0x26, 0xDC, 0x05, //   Logical Maximum (1500)
+    0x09, 0x36,       //   Usage (Temperature) -- RP2040 die
+    0x81, 0x02,       //   Input (Data,Var,Abs)
+    0x09, 0x36,       //   Usage (Temperature) -- RP2040 die
     0xB1, 0x02,       //   Feature (Data,Var,Abs)
 
     0xC0,             // End Collection
@@ -141,13 +161,28 @@ impl RequestHandler for PowerHandler {
     }
 }
 
-struct ThermalHandler;
+struct PowerThermalHandler;
 
-impl RequestHandler for ThermalHandler {
+impl RequestHandler for PowerThermalHandler {
     fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
         match id {
             ReportId::Feature(_) | ReportId::In(_) => {
-                let bytes = THERMAL_TELEMETRY.try_get().unwrap().to_bytes();
+                let bytes = POWER_THERMAL_TELEMETRY.try_get().unwrap().to_bytes();
+                buf[..bytes.len()].copy_from_slice(&bytes);
+                Some(bytes.len())
+            }
+            _ => None,
+        }
+    }
+}
+
+struct ProcessorThermalHandler;
+
+impl RequestHandler for ProcessorThermalHandler {
+    fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
+        match id {
+            ReportId::Feature(_) | ReportId::In(_) => {
+                let bytes = PROCESSOR_THERMAL_TELEMETRY.try_get().unwrap().to_bytes();
                 buf[..bytes.len()].copy_from_slice(&bytes);
                 Some(bytes.len())
             }
@@ -160,7 +195,9 @@ pub struct UsbPeripherals {
     pub usb: UsbDevice<'static, UsbDriver>,
     pub brightness_writer: HidWriter<'static, UsbDriver, { protocol::BRIGHTNESS_REPORT_LEN }>,
     pub power_writer: HidWriter<'static, UsbDriver, { protocol::POWER_REPORT_LEN }>,
-    pub thermal_writer: HidWriter<'static, UsbDriver, { protocol::THERMAL_REPORT_LEN }>,
+    pub power_thermal_writer: HidWriter<'static, UsbDriver, { protocol::POWER_THERMAL_REPORT_LEN }>,
+    pub processor_thermal_writer:
+        HidWriter<'static, UsbDriver, { protocol::PROCESSOR_THERMAL_REPORT_LEN }>,
 }
 
 pub fn init(usb_driver: UsbDriver, unique_id: &'static str) -> UsbPeripherals {
@@ -184,13 +221,22 @@ pub fn init(usb_driver: UsbDriver, unique_id: &'static str) -> UsbPeripherals {
         POWER_STATE.init(HidState::new()),
     );
 
-    static THERMAL_HANDLER: StaticCell<ThermalHandler> = StaticCell::new();
-    static THERMAL_STATE: StaticCell<HidState> = StaticCell::new();
-    let thermal_writer = build_hid_writer(
+    static POWER_THERMAL_HANDLER: StaticCell<PowerThermalHandler> = StaticCell::new();
+    static POWER_THERMAL_STATE: StaticCell<HidState> = StaticCell::new();
+    let power_thermal_writer = build_hid_writer(
         &mut builder,
-        THERMAL_REPORT_DESCRIPTOR,
-        THERMAL_HANDLER.init(ThermalHandler),
-        THERMAL_STATE.init(HidState::new()),
+        POWER_THERMAL_REPORT_DESCRIPTOR,
+        POWER_THERMAL_HANDLER.init(PowerThermalHandler),
+        POWER_THERMAL_STATE.init(HidState::new()),
+    );
+
+    static PROCESSOR_THERMAL_HANDLER: StaticCell<ProcessorThermalHandler> = StaticCell::new();
+    static PROCESSOR_THERMAL_STATE: StaticCell<HidState> = StaticCell::new();
+    let processor_thermal_writer = build_hid_writer(
+        &mut builder,
+        PROCESSOR_THERMAL_REPORT_DESCRIPTOR,
+        PROCESSOR_THERMAL_HANDLER.init(ProcessorThermalHandler),
+        PROCESSOR_THERMAL_STATE.init(HidState::new()),
     );
 
     let usb = builder.build();
@@ -199,7 +245,8 @@ pub fn init(usb_driver: UsbDriver, unique_id: &'static str) -> UsbPeripherals {
         usb,
         brightness_writer,
         power_writer,
-        thermal_writer,
+        power_thermal_writer,
+        processor_thermal_writer,
     }
 }
 
@@ -297,18 +344,35 @@ pub async fn power_report_task(
 }
 
 #[embassy_executor::task]
-pub async fn thermal_report_task(
-    mut writer: HidWriter<'static, UsbDriver, { protocol::THERMAL_REPORT_LEN }>,
+pub async fn power_thermal_report_task(
+    mut writer: HidWriter<'static, UsbDriver, { protocol::POWER_THERMAL_REPORT_LEN }>,
 ) -> ! {
     writer.ready().await;
-    let mut thermal = THERMAL_TELEMETRY.receiver().unwrap();
-    let mut value = thermal.try_get().unwrap();
+    let mut power_thermal = POWER_THERMAL_TELEMETRY.receiver().unwrap();
+    let mut value = power_thermal.try_get().unwrap();
 
     loop {
         if let Err(e) = writer.write(&value.to_bytes()).await {
             warn!("thermal input report write failed: {:?}", e);
         }
 
-        value = thermal.changed().await;
+        value = power_thermal.changed().await;
+    }
+}
+
+#[embassy_executor::task]
+pub async fn processor_thermal_report_task(
+    mut writer: HidWriter<'static, UsbDriver, { protocol::PROCESSOR_THERMAL_REPORT_LEN }>,
+) -> ! {
+    writer.ready().await;
+    let mut processor_thermal = PROCESSOR_THERMAL_TELEMETRY.receiver().unwrap();
+    let mut value = processor_thermal.try_get().unwrap();
+
+    loop {
+        if let Err(e) = writer.write(&value.to_bytes()).await {
+            warn!("chip temperature input report write failed: {:?}", e);
+        }
+
+        value = processor_thermal.changed().await;
     }
 }

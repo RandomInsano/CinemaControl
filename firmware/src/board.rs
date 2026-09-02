@@ -1,16 +1,27 @@
-//! Hardware bring-up for the current board (RP2040, Raspberry Pi Pico).
+//! Hardware bring-up for the current board: a Raspberry Pi Pico or a
+//! Waveshare RP2040-Zero — both plain RP2040 and wired identically for
+//! everything this firmware touches, so no board-select feature exists. The
+//! optional `neopixel` feature (see `neopixel.rs`) drives a WS2812 on
+//! GPIO16: the RP2040-Zero's onboard one, or an external one wired up on a
+//! Pico.
 //!
 //! `unique_id` reads the QSPI flash chip's factory-programmed 64-bit ID via
 //! JEDEC "Read Unique ID" (command `0x4B`).
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
+use mcu_hal::adc::{self, Adc};
 use mcu_hal::flash::{self, Flash};
 use mcu_hal::i2c::{self, I2c};
 use mcu_hal::pwm::{self, Pwm};
 use mcu_hal::usb::{self, Driver};
 use mcu_hal::{Peri, bind_interrupts, dma, peripherals};
 use static_cell::StaticCell;
+
+#[cfg(feature = "neopixel")]
+use mcu_hal::pio::{self, Pio};
+#[cfg(feature = "neopixel")]
+use mcu_hal::pio_programs::ws2812::{Grb, PioWs2812, PioWs2812Program};
 
 use crate::clock_config;
 
@@ -33,10 +44,25 @@ type FlashDma = peripherals::DMA_CH0;
 pub const FLASH_SIZE: usize = 2 * 1024 * 1024;
 pub type BoardFlash = Flash<'static, FlashPeripheral, flash::Async, FLASH_SIZE>;
 
+pub type ProcessorThermalAdc = Adc<'static, adc::Async>;
+pub type ProcessorThermalChannel = adc::Channel<'static>;
+
+#[cfg(feature = "neopixel")]
+type NeopixelPeripheral = peripherals::PIO0;
+#[cfg(feature = "neopixel")]
+type NeopixelDma = peripherals::DMA_CH1;
+#[cfg(feature = "neopixel")]
+type NeopixelPin = peripherals::PIN_16;
+#[cfg(feature = "neopixel")]
+pub type Neopixel = PioWs2812<'static, NeopixelPeripheral, 0, 1, Grb>;
+
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => usb::InterruptHandler<UsbPeripheral>;
     I2C0_IRQ => i2c::InterruptHandler<SmbusPeripheral>;
-    DMA_IRQ_0 => dma::InterruptHandler<FlashDma>;
+    ADC_IRQ_FIFO => adc::InterruptHandler;
+    DMA_IRQ_0 => dma::InterruptHandler<FlashDma>, #[cfg(feature = "neopixel")] dma::InterruptHandler<NeopixelDma>;
+    #[cfg(feature = "neopixel")]
+    PIO0_IRQ_0 => pio::InterruptHandler<NeopixelPeripheral>;
 });
 
 pub struct Board {
@@ -44,6 +70,10 @@ pub struct Board {
     pub backlight: Backlight,
     pub smbus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>,
     pub flash: BoardFlash,
+    pub adc: ProcessorThermalAdc,
+    pub processor_thermal_channel: ProcessorThermalChannel,
+    #[cfg(feature = "neopixel")]
+    pub neopixel: Neopixel,
     pub unique_id: &'static str,
 }
 
@@ -61,8 +91,25 @@ pub fn split() -> Board {
         backlight: backlight_pwm(p.PWM_SLICE7, p.PIN_15),
         smbus: SMBUS.init(Mutex::new(smbus_bus(p.I2C0, p.PIN_5, p.PIN_4))),
         flash,
+        adc: Adc::new(p.ADC, Irqs, adc::Config::default()),
+        processor_thermal_channel: adc::Channel::new_temp_sensor(p.ADC_TEMP_SENSOR),
+        #[cfg(feature = "neopixel")]
+        neopixel: neopixel_ws2812(p.PIO0, p.DMA_CH1, p.PIN_16),
         unique_id: hex_encode(raw_id),
     }
+}
+
+#[cfg(feature = "neopixel")]
+fn neopixel_ws2812(
+    pio0: Peri<'static, NeopixelPeripheral>,
+    dma: Peri<'static, NeopixelDma>,
+    pin: Peri<'static, NeopixelPin>,
+) -> Neopixel {
+    let Pio {
+        mut common, sm0, ..
+    } = Pio::new(pio0, Irqs);
+    let program = PioWs2812Program::new(&mut common);
+    PioWs2812::new(&mut common, sm0, dma, Irqs, pin, &program)
 }
 
 fn hex_encode(bytes: [u8; 8]) -> &'static str {

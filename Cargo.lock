@@ -23,6 +23,7 @@ dependencies = [
  "portable-atomic",
  "protocol",
  "sequential-storage",
+ "smart-leds",
  "static_cell",
 ]
 

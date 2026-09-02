@@ -3,21 +3,32 @@
 use std::collections::BTreeMap;
 use std::ffi::CString;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use hidapi::HidApi;
 
 const BRIGHTNESS_INTERFACE: i32 = 0;
 const POWER_INTERFACE: i32 = 1;
-const THERMAL_INTERFACE: i32 = 2;
+const POWER_THERMAL_INTERFACE: i32 = 2;
+const PROCESSOR_THERMAL_INTERFACE: i32 = 3;
 
+/// Each path is `None` when the connected board's firmware predates that
+/// interface (e.g. `processor_thermal_path` on a board flashed before it
+/// existed) — a board only needs to expose *some* interface to be
+/// discovered at all.
 pub struct Board {
     pub serial: String,
-    pub brightness_path: CString,
-    pub power_path: CString,
-    pub thermal_path: CString,
+    pub brightness_path: Option<CString>,
+    pub power_path: Option<CString>,
+    pub power_thermal_path: Option<CString>,
+    pub processor_thermal_path: Option<CString>,
 }
 
-type PartialBoard = (Option<CString>, Option<CString>, Option<CString>);
+type PartialBoard = (
+    Option<CString>,
+    Option<CString>,
+    Option<CString>,
+    Option<CString>,
+);
 
 pub fn discover(api: &HidApi) -> Result<Vec<Board>> {
     let mut by_serial: BTreeMap<String, PartialBoard> = BTreeMap::new();
@@ -32,23 +43,25 @@ pub fn discover(api: &HidApi) -> Result<Vec<Board>> {
         match info.interface_number() {
             BRIGHTNESS_INTERFACE => slot.0 = Some(info.path().to_owned()),
             POWER_INTERFACE => slot.1 = Some(info.path().to_owned()),
-            THERMAL_INTERFACE => slot.2 = Some(info.path().to_owned()),
+            POWER_THERMAL_INTERFACE => slot.2 = Some(info.path().to_owned()),
+            PROCESSOR_THERMAL_INTERFACE => slot.3 = Some(info.path().to_owned()),
             other => bail!("unexpected interface number {other} on a CinemaControl device"),
         }
     }
 
-    by_serial
+    Ok(by_serial
         .into_iter()
-        .map(|(serial, (brightness, power, thermal))| {
-            Ok(Board {
-                brightness_path: brightness
-                    .with_context(|| format!("board {serial:?} has no brightness interface"))?,
-                power_path: power
-                    .with_context(|| format!("board {serial:?} has no power interface"))?,
-                thermal_path: thermal
-                    .with_context(|| format!("board {serial:?} has no thermal interface"))?,
+        .map(
+            |(
                 serial,
-            })
-        })
-        .collect()
+                (brightness_path, power_path, power_thermal_path, processor_thermal_path),
+            )| Board {
+                serial,
+                brightness_path,
+                power_path,
+                power_thermal_path,
+                processor_thermal_path,
+            },
+        )
+        .collect())
 }
