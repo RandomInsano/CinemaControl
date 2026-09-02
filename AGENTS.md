@@ -38,7 +38,8 @@ instead. Two narrow exceptions, both kept short:
 
 - HID report descriptors: raw descriptor bytes (`0x05, 0x80, ...`) are
   unreadable without a byte-by-byte gloss of what each item means, so those
-  get commented line-by-line (see `HID_REPORT_DESCRIPTOR` in `src/hid.rs`).
+  get commented line-by-line (see `MONITOR_REPORT_DESCRIPTOR` and the other
+  `*_REPORT_DESCRIPTOR` constants in `src/hid.rs`).
 - Datasheet facts: a register address, calibration constant, or timing value
   can carry a one-line citation of where it came from (chip, datasheet
   section, measured value) since that can't be recovered by reading the code.
@@ -54,7 +55,9 @@ runs past one line, gets deleted rather than kept.
 `firmware/src/board.rs` owns all hardware bring-up: `board::split()` calls
 `mcu_hal::init(clock_config())` and turns every raw peripheral into the
 driver abstraction its module actually uses (`UsbDriver`, `Backlight` (a
-`Pwm`), `SmbusBus`, `BoardFlash`), bundled into a `Board` — plus
+`Pwm`), `SmbusBus`, `BoardFlash`, `ProcessorThermalAdc` +
+`ProcessorThermalChannel`, and — behind the optional `neopixel` Cargo
+feature — a `Neopixel`), bundled into a `Board` — plus
 `Board::unique_id: &'static str`, the RP2040's attached flash chip's
 factory-programmed 64-bit ID (read via `BoardFlash::blocking_unique_id`,
 hex-encoded here into `'static` storage). `hid.rs` uses it as the USB serial
@@ -63,7 +66,17 @@ but takes it as a plain string rather than anything shaped around flash IDs
 specifically (clamping it to what a USB string descriptor can hold in
 `usb_device_config`, not to 16 hex characters), so a future chip with a
 different ID scheme, or any other source entirely, only ever means changing
-`board.rs`. No other module
+`board.rs`. `Board::smbus` is a `&'static Mutex<CriticalSectionRawMutex,
+SmbusBus>` rather than a bare bus handle, since `smbus.rs`'s two sensor
+tasks each need their own access to it (see the SMBus section below);
+`shared_i2c.rs` wraps that `Mutex` in a cheap `Copy` handle implementing
+`embedded-hal-async`'s `I2c`, for either task to hand to its driver crate.
+Board support is a plain Pico or a Waveshare RP2040-Zero — both are the same
+RP2040 wired identically for everything this firmware touches, so there's no
+board-select feature; the only thing that differs between them is the
+optional `neopixel` feature, which drives a WS2812 on GPIO16 (the
+RP2040-Zero's onboard one, or an external one wired up on a Pico) as a
+brightness indicator (see `neopixel.rs`). No other module
 calls a driver's `new()`, reaches into `mcu_hal::Peripherals` fields, or
 sees `mcu_hal::peripherals` types at all — `board.rs` is the only place raw
 chip/pin names and `bind_interrupts!`'s PAC-defined vector names
@@ -73,13 +86,18 @@ pinout means editing this file — plus the `embassy-rp` chip feature in
 chip-specific — and nothing else.
 
 Each peripheral subsystem is its own module (`hid.rs`, `pwm.rs`, `smbus.rs`,
-`storage.rs`, all under `firmware/src/`) that takes its already-brought-up
-driver from `Board` and does only its own domain logic on top: `hid.rs`
-builds the USB descriptors/HID interfaces, `pwm.rs` seeds the duty cycle
-from `hid::BRIGHTNESS`, `storage.rs` wraps the flash in
-`sequential-storage`'s `MapStorage`. `smbus.rs` has nothing left to add on
-top, so it has no `init()` at all — `main.rs` spawns
-`smbus::telemetry_task(p.smbus)` directly. `board.rs` never reads another
+`storage.rs`, `processor_thermal.rs`, and the feature-gated `neopixel.rs`,
+all under `firmware/src/`) that takes its already-brought-up driver from
+`Board` and does only its own domain logic on top: `hid.rs` builds the USB
+descriptors/HID interfaces, `pwm.rs` seeds the duty cycle from
+`hid::BRIGHTNESS`, `storage.rs` wraps the flash in `sequential-storage`'s
+`MapStorage`, `processor_thermal.rs` samples the RP2040's on-die ADC
+temperature sensor on its own timer, and `neopixel.rs` mirrors
+`hid::BRIGHTNESS` onto a WS2812. `smbus.rs` and `processor_thermal.rs` each
+have nothing left to add on top, so neither has an `init()` — `main.rs`
+spawns `smbus::ina219_task(p.smbus)`, `smbus::emc1403_task(p.smbus)`, and
+`processor_thermal::task(p.adc, p.processor_thermal_channel)` directly.
+`board.rs` never reads another
 module's state (e.g.
 `hid::BRIGHTNESS`) to do this — that's specifically why seeding the
 backlight's initial duty cycle stays in `pwm.rs` rather than moving into
@@ -104,13 +122,15 @@ in a module alongside `hid.rs`/etc. rather than growing those files with
 things that aren't about the peripheral itself; anything both `firmware` and
 `cinectl` need belongs in `protocol/` instead.
 
-`hid::BRIGHTNESS` and `smbus::PSU_TELEMETRY` are each an
+`hid::BRIGHTNESS`, `smbus::POWER_TELEMETRY`, `smbus::POWER_THERMAL_TELEMETRY`,
+and `processor_thermal::PROCESSOR_THERMAL_TELEMETRY` are each an
 `embassy_sync::watch::Watch` doing double duty as both the current value
 (read synchronously via `try_get`) and the change notification (awaited via
 a receiver's `changed`) — see the doc comments on those statics. This is why
-`hid_report_task`/`psu_report_task`/`pwm::task` push a report or apply a
-value only when something actually changes, instead of polling on a
-`Timer`.
+`hid_report_task`/`power_report_task`/`power_thermal_report_task`/
+`processor_thermal_report_task`/`pwm::task`/`neopixel::task` push a report
+or apply a value only when something actually changes, instead of polling
+on a `Timer`.
 
 ## Build
 
@@ -141,25 +161,33 @@ The PSU's own PMBus chip's register map is still undocumented and
 lives here anymore (it did, historically, to help identify the two chips
 below from real bus captures; that's done, so it was deleted rather than
 kept as a read-only diagnostic feature). The module only talks to two
-confirmed, identified chips: a TI INA219 (`ina219` crate, real
+confirmed, identified chips, each on its own task since each has its own
+refresh cadence (derived from its own conversion time, via
+`refresh_interval_for`): a TI INA219 (`ina219` crate, real
 Voltage/Current/Power, calibrated per the confirmed shunt resistor value in
-`INA219_CALIBRATION_RAW`'s doc comment) and a Microchip EMC1403 (`emc1403`
-crate, real temperature). Both are read every
-`telemetry_task` cycle via `update_telemetry`.
+`INA219_CALIBRATION_RAW`'s doc comment, read by `ina219_task`) and a
+Microchip EMC1403 (`emc1403` crate, real temperature, read by
+`emc1403_task`). Both tasks reach the bus through `shared_i2c::SharedI2c`,
+a cheap `Copy` handle onto the `Mutex`-wrapped `SmbusBus` in `Board` (see
+the `board.rs` note above).
 
-`smbus.rs` also owns `PsuTelemetry` / `PSU_TELEMETRY` — `hid.rs`'s second
-HID interface (Voltage/Current/Power/Temperature, `PSU_REPORT_DESCRIPTOR`)
-just imports and reports it. The descriptor deliberately uses HID Power
-Device Usage 0x05 "PowerSupply", not 0x04 "UPS" — this is telemetry from an
-internal PSU, not a battery-backup device, and tagging it UPS could make a
-host treat it like one (e.g. offer battery-loss shutdown behavior).
+`smbus.rs` owns `POWER_TELEMETRY` (`PowerTelemetry`, from `ina219_task`) and
+`POWER_THERMAL_TELEMETRY` (`PowerThermalTelemetry`, from `emc1403_task`) —
+`hid.rs`'s power and power-thermal HID interfaces (`POWER_REPORT_DESCRIPTOR`,
+`POWER_THERMAL_REPORT_DESCRIPTOR`) just import and report them. (The
+RP2040's own die temperature is a separate, unrelated HID interface owned by
+`processor_thermal.rs` — see above.) Both descriptors deliberately use HID
+Power Device Usage 0x05 "PowerSupply", not 0x04 "UPS" — this is telemetry
+from an internal PSU, not a battery-backup device, and tagging it UPS could
+make a host treat it like one (e.g. offer battery-loss shutdown behavior).
 
 ## cinectl (host CLI)
 
 `cinectl/` is a `std` binary crate, developed on macOS but also buildable on
 Linux (see `cinectl/README.md` for Linux build prerequisites and the udev
-rule needed for non-root device access — `cinectl/99-cinemacontrol.rules`),
-that talks to the firmware over USB HID: `cinectl
+rule needed for non-root device access —
+`cinectl/packaging/99-cinemacontrol.rules`), that talks to the firmware over
+USB HID: `cinectl
 list|get-brightness|set-brightness|get-psu|watch`, via `hidapi`. The
 `hidapi` dependency's `macos-shared-device` feature is scoped to a
 `[target.'cfg(target_os = "macos")'.dependencies]` table in
