@@ -1,19 +1,17 @@
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use anyhow::{Context, Result};
-use hidapi::{HidApi, HidDevice};
+use hidapi::HidApi;
 
 use board_hid::device::Board;
 use board_hid::report;
 use board_hid::telemetry::{
-    read_brightness, read_power, read_power_thermal, read_processor_thermal,
+    read_brightness, read_power, read_power_thermal, read_processor_thermal, stream_brightness,
+    stream_power, stream_power_thermal, stream_processor_thermal,
 };
 use board_hid::transport::{open, require_path};
-use protocol::{
-    BRIGHTNESS_REPORT_LEN, POWER_REPORT_LEN, POWER_THERMAL_REPORT_LEN,
-    PROCESSOR_THERMAL_REPORT_LEN, PowerTelemetry, PowerThermalTelemetry, ProcessorThermalTelemetry,
-};
+use protocol::{PowerTelemetry, PowerThermalTelemetry, ProcessorThermalTelemetry};
 
 pub fn list(boards: &[Board]) -> Result<()> {
     if boards.is_empty() {
@@ -61,45 +59,24 @@ enum Update {
 }
 
 pub fn watch(api: &HidApi, board: &Board, combined: bool) -> Result<()> {
-    let brightness_device = open(api, require_path(&board.brightness_path, "brightness")?)?;
-
     let (tx, rx) = mpsc::channel::<Update>();
 
-    spawn_reader(
-        brightness_device,
+    // Brightness is the one interface every CinemaControl firmware has
+    // ever shipped with, so its absence fails the whole command; the
+    // PSU/thermal interfaces are best-effort, same as `get_psu`.
+    forward(
+        stream_brightness(api, board)?,
         tx.clone(),
-        BRIGHTNESS_REPORT_LEN,
-        |bytes| Update::Brightness(report::brightness_from_bytes([bytes[0], bytes[1]])),
+        Update::Brightness,
     );
-    if let Some(path) = board.power_path.as_deref() {
-        let power_device = open(api, path)?;
-        spawn_reader(power_device, tx.clone(), POWER_REPORT_LEN, |bytes| {
-            Update::Power(PowerTelemetry::from_bytes(bytes.try_into().unwrap()))
-        });
+    if let Ok(power) = stream_power(api, board) {
+        forward(power, tx.clone(), Update::Power);
     }
-    if let Some(path) = board.power_thermal_path.as_deref() {
-        let power_thermal_device = open(api, path)?;
-        spawn_reader(
-            power_thermal_device,
-            tx.clone(),
-            POWER_THERMAL_REPORT_LEN,
-            |bytes| {
-                Update::PowerThermal(PowerThermalTelemetry::from_bytes(bytes.try_into().unwrap()))
-            },
-        );
+    if let Ok(power_thermal) = stream_power_thermal(api, board) {
+        forward(power_thermal, tx.clone(), Update::PowerThermal);
     }
-    if let Some(path) = board.processor_thermal_path.as_deref() {
-        let processor_thermal_device = open(api, path)?;
-        spawn_reader(
-            processor_thermal_device,
-            tx.clone(),
-            PROCESSOR_THERMAL_REPORT_LEN,
-            |bytes| {
-                Update::ProcessorThermal(ProcessorThermalTelemetry::from_bytes(
-                    bytes.try_into().unwrap(),
-                ))
-            },
-        );
+    if let Ok(processor_thermal) = stream_processor_thermal(api, board) {
+        forward(processor_thermal, tx.clone(), Update::ProcessorThermal);
     }
     drop(tx);
 
@@ -146,25 +123,24 @@ fn watch_combined(api: &HidApi, board: &Board, rx: mpsc::Receiver<Update>) -> Re
     Ok(())
 }
 
-fn spawn_reader(
-    device: HidDevice,
+/// Relays a `board_hid` telemetry stream onto the merged `Update` channel
+/// `watch` blocks on, wrapping each value with `variant`. Ends (dropping
+/// its `tx` clone) the moment the stream itself ends — the `Err` that
+/// signals that is relayed too, then the loop stops on the now-closed
+/// `rx`.
+fn forward<T: Send + 'static>(
+    rx: Receiver<Result<T>>,
     tx: mpsc::Sender<Update>,
-    report_len: usize,
-    format: impl Fn(&[u8]) -> Update + Send + 'static,
+    variant: impl Fn(T) -> Update + Send + 'static,
 ) {
     thread::spawn(move || {
-        let mut buf = vec![0u8; report_len];
-        loop {
-            match device.read(&mut buf) {
-                Ok(_) => {
-                    if tx.send(format(&buf)).is_err() {
-                        return;
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(Update::Error(format!("stopped watching: {e}")));
-                    return;
-                }
+        for result in rx {
+            let message = match result {
+                Ok(value) => variant(value),
+                Err(e) => Update::Error(format!("stopped watching: {e:#}")),
+            };
+            if tx.send(message).is_err() {
+                return;
             }
         }
     });

@@ -7,6 +7,14 @@
 //! it into the menu the way Apple's own menu bar extras (volume,
 //! brightness) do it. The slider isn't wired to a target/action; `main.rs`
 //! just polls `percent()` on the same timer it uses for everything else.
+//!
+//! It's write-only from the app's side: nothing ever calls
+//! `setDoubleValue` again after `insert` sets the initial position. A
+//! telemetry read that disagreed with wherever the user last left the
+//! knob would otherwise yank it out from under a drag in progress — the
+//! cause of several past rounds of jumpiness — so the knob only moves in
+//! response to the user's own input, and reported brightness is shown as
+//! text instead (see `update_telemetry_text` in `main.rs`).
 
 use std::ffi::c_void;
 
@@ -61,9 +69,5 @@ impl BrightnessSlider {
 
     pub fn percent(&self) -> u32 {
         self.control.doubleValue().round() as u32
-    }
-
-    pub fn set_percent(&self, value: u32) {
-        self.control.setDoubleValue(f64::from(value));
     }
 }

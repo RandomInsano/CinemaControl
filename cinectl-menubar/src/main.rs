@@ -4,13 +4,18 @@
 //! submenu; boards can come and go (hot-plug/unplug, or none at all at
 //! launch) without a restart.
 //!
-//! There's no background polling: nothing reads a board until the user
-//! actually opens the menu, at which point every currently-plugged-in board
-//! is queried in parallel, each bounded by `REFRESH_TIMEOUT` so one stalled
-//! device can't hold up the rest. This also sidesteps the round-trip
-//! latency of the old continuous-input-report design, which was the root
-//! cause of several rounds of slider jumpiness — a feature-report read/set
-//! is a synchronous request/response, not a periodic push.
+//! Nothing reads a board until the user actually opens the menu, at which
+//! point every currently-plugged-in board is queried in parallel (bounded
+//! by `REFRESH_TIMEOUT` so one stalled device can't hold up the rest) and
+//! the top-level menu is rebuilt to match. From then on, for as long as
+//! the board stays connected, its text is kept live by four background
+//! threads (one per interface) blocking-reading the device's pushed input
+//! reports — see `board_hid::transport::stream_input` — rather than by
+//! polling: a report only arrives when the value actually changes, so an
+//! idle board generates no traffic between updates. Text only, though:
+//! the brightness slider is write-only from the app's side, moved only by
+//! the user's own drag and never reassigned from a telemetry push — doing
+//! that was the root cause of several past rounds of slider jumpiness.
 //!
 //! Board discovery, HID transport, and the report wire format live in
 //! `board-hid`, shared with `cinectl`.
@@ -22,7 +27,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_void;
 use std::rc::Rc;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -30,7 +35,8 @@ use anyhow::{Context, Result};
 use board_hid::device::{self, Board};
 use board_hid::report;
 use board_hid::telemetry::{
-    read_brightness, read_power, read_power_thermal, read_processor_thermal,
+    read_brightness, read_power, read_power_thermal, read_processor_thermal, stream_brightness,
+    stream_power, stream_power_thermal, stream_processor_thermal,
 };
 use board_hid::transport::{open, require_path};
 use hidapi::{HidApi, HidDevice};
@@ -116,7 +122,7 @@ fn main() -> Result<()> {
             return;
         }
 
-        // The actual refresh now happens in MenuDelegate::menuNeedsUpdate,
+        // The discovery refresh happens in MenuDelegate::menuNeedsUpdate,
         // synchronously before the menu is shown — just drain the channel
         // here so it doesn't grow unbounded.
         while TrayIconEvent::receiver().try_recv().is_ok() {}
@@ -129,6 +135,11 @@ fn main() -> Result<()> {
         if let Ok(mut state) = state.try_borrow_mut() {
             let mut disconnected = Vec::new();
             for (serial, board) in state.boards.iter_mut() {
+                // Applies whatever telemetry pushes have arrived since the
+                // last tick — cheap even when nothing has, since it's a
+                // non-blocking drain of however many background reader
+                // threads (see `TelemetryStreams`) have sent so far.
+                board.streams.drain_into(&board.menu);
                 if !board.poll_drag() {
                     disconnected.push(serial.clone());
                 }
@@ -228,8 +239,16 @@ fn refresh(api: &mut HidApi, boards: &mut BTreeMap<String, BoardState>, top_ns_m
     let discovered_serials: BTreeSet<String> =
         discovered.iter().map(|b| b.serial.clone()).collect();
 
+    // Only boards `apply` hasn't seen yet need a read here — an
+    // already-tracked board's text is being kept current continuously by
+    // its own `TelemetryStreams`, so re-reading it on every open would
+    // just be redundant HID traffic.
+    let new_boards = discovered
+        .into_iter()
+        .filter(|board| !boards.contains_key(&board.serial));
+
     let (tx, rx) = mpsc::channel();
-    for board in discovered {
+    for board in new_boards {
         let tx = tx.clone();
         thread::spawn(move || {
             let result = HidApi::new()
@@ -266,9 +285,10 @@ fn refresh(api: &mut HidApi, boards: &mut BTreeMap<String, BoardState>, top_ns_m
     }
 }
 
-/// Updates an already-tracked board's menu with fresh telemetry, or builds
-/// a new board's menu and adds it, opening a write handle it keeps for
-/// slider drags for as long as it stays connected.
+/// Builds a new board's menu and adds it: opens a write handle it keeps
+/// for slider drags, and starts its `TelemetryStreams` for as long as it
+/// stays connected. Only ever called (by `refresh`) for a board that
+/// isn't already tracked.
 fn apply(
     api: &HidApi,
     board: Board,
@@ -276,25 +296,6 @@ fn apply(
     boards: &mut BTreeMap<String, BoardState>,
     top_ns_menu: *mut c_void,
 ) {
-    if let Some(state) = boards.get_mut(&board.serial) {
-        state.brightness = telemetry.brightness;
-        state.slider_synced_percent = percent(telemetry.brightness);
-        state
-            .menu
-            .set_brightness_text(&brightness_text(telemetry.brightness));
-        state.menu.slider.set_percent(state.slider_synced_percent);
-        state
-            .menu
-            .set_power_text(&format!("Power: {}", telemetry.power));
-        state
-            .menu
-            .set_power_thermal_text(&format!("Temp: {}", telemetry.power_thermal));
-        state
-            .menu
-            .set_processor_thermal_text(&format!("MCU: {}", telemetry.processor_thermal));
-        return;
-    }
-
     let write_device =
         match require_path(&board.brightness_path, "brightness").and_then(|path| open(api, path)) {
             Ok(device) => device,
@@ -318,20 +319,88 @@ fn apply(
     let position = boards.len() as isize;
     top_menu(top_ns_menu).insertItem_atIndex(&menu.item, position);
 
+    let streams = TelemetryStreams::open(api, &board);
     boards.insert(
         board.serial,
         BoardState {
             menu,
             write_device,
+            streams,
             brightness: telemetry.brightness,
             slider_synced_percent: percent(telemetry.brightness),
         },
     );
 }
 
+/// A board's four telemetry interfaces, each streamed by its own
+/// background thread (`board_hid::transport::stream_input`) for as long
+/// as `apply` was able to open it — `None` for an interface a board's
+/// firmware predates, same as the one-shot reads' `unwrap_or_default`.
+struct TelemetryStreams {
+    brightness: Option<Receiver<Result<u16>>>,
+    power: Option<Receiver<Result<PowerTelemetry>>>,
+    power_thermal: Option<Receiver<Result<PowerThermalTelemetry>>>,
+    processor_thermal: Option<Receiver<Result<ProcessorThermalTelemetry>>>,
+}
+
+impl TelemetryStreams {
+    fn open(api: &HidApi, board: &Board) -> Self {
+        Self {
+            brightness: stream_brightness(api, board).ok(),
+            power: stream_power(api, board).ok(),
+            power_thermal: stream_power_thermal(api, board).ok(),
+            processor_thermal: stream_processor_thermal(api, board).ok(),
+        }
+    }
+
+    /// Applies every update that's arrived on any of the four streams
+    /// since the last call, updating `menu`'s text in place. Never
+    /// touches the slider — see the module doc for why.
+    fn drain_into(&mut self, menu: &BoardMenu) {
+        drain(&mut self.brightness, |v| {
+            menu.set_brightness_text(&brightness_text(v))
+        });
+        drain(&mut self.power, |v| {
+            menu.set_power_text(&format!("Power: {v}"))
+        });
+        drain(&mut self.power_thermal, |v| {
+            menu.set_power_thermal_text(&format!("Temp: {v}"))
+        });
+        drain(&mut self.processor_thermal, |v| {
+            menu.set_processor_thermal_text(&format!("MCU: {v}"))
+        });
+    }
+}
+
+/// Applies every value already sitting in `stream`, in order, without
+/// blocking. Clears `stream` to `None` (so future calls are a no-op) once
+/// its reader thread has ended — a read error or the device going away —
+/// since nothing more will ever arrive on it.
+fn drain<T>(stream: &mut Option<Receiver<Result<T>>>, mut apply: impl FnMut(T)) {
+    let Some(rx) = stream.as_ref() else {
+        return;
+    };
+    loop {
+        match rx.try_recv() {
+            Ok(Ok(value)) => apply(value),
+            Ok(Err(e)) => {
+                eprintln!("telemetry stream ended: {e:#}");
+                *stream = None;
+                return;
+            }
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                *stream = None;
+                return;
+            }
+        }
+    }
+}
+
 struct BoardState {
     menu: BoardMenu,
     write_device: HidDevice,
+    streams: TelemetryStreams,
     brightness: u16,
     slider_synced_percent: u32,
 }
