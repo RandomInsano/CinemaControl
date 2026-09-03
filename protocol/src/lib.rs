@@ -11,6 +11,11 @@ pub const VENDOR_ID: u16 = 0x1209;
 pub const PRODUCT_ID: u16 = 0xCC02;
 
 pub const MAX_BRIGHTNESS: u16 = 1023;
+/// Floor enforced on every write to the brightness HID interface (see
+/// `firmware/src/hid.rs`'s `BrightnessHandler::set_report`), so no host —
+/// ours or otherwise — can blank the backlight to a completely dark,
+/// unreadable screen.
+pub const MIN_BRIGHTNESS: u16 = 8;
 
 pub const BRIGHTNESS_REPORT_LEN: usize = 2;
 pub const POWER_REPORT_LEN: usize = 8;

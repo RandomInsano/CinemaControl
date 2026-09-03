@@ -45,13 +45,19 @@ default-members = [
 ]
 
 # Cargo ignores [profile.*] in member manifests — these must live at the
-# workspace root, and apply to every member. `firmware` needs the aggressive
-# size/panic settings (flash is tight, and `no_std` requires panic="abort"
-# regardless); `cinectl` gets its own opt-level override below since it has
-# no flash budget to optimize for. `panic`/`lto` can't be overridden
-# per-package, but "abort" and LTO are both fine for a small CLI tool too.
+# workspace root, and apply to every member. `no_std` requires
+# panic="abort" regardless. `opt-level = 3` over the usual embedded default
+# of "z"/"s": measured firmware flash usage is ~75KB of the RP2040's 2MB
+# (see `memory.x`), so there's no size pressure to trade code speed for —
+# optimizing for space here would be paying real CPU cycles for headroom
+# nobody needs. The host binaries (`cinectl`, `cinectl-menubar`) get their
+# own overrides below since they ship as plain executables with no debugger
+# attached to their release builds, unlike `firmware`'s ELF (kept as
+# `debug = true` there for probe-rs's on-panic backtraces). `panic`/`lto`
+# can't be overridden per-package, but "abort" and LTO are both fine for
+# host binaries too.
 [profile.release]
-opt-level = "z"
+opt-level = 3
 lto = true
 codegen-units = 1
 debug = true
@@ -62,3 +68,10 @@ panic = "abort"
 
 [profile.release.package.cinectl]
 opt-level = 3
+debug = false
+strip = true
+
+[profile.release.package.cinectl-menubar]
+opt-level = 3
+debug = false
+strip = true

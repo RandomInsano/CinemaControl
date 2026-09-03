@@ -7,6 +7,8 @@ pub fn brightness_from_bytes(bytes: [u8; 2]) -> u16 {
 }
 
 pub fn brightness_feature_report(value: u16) -> [u8; protocol::BRIGHTNESS_REPORT_LEN + 1] {
-    let [lo, hi] = value.min(protocol::MAX_BRIGHTNESS).to_le_bytes();
+    let [lo, hi] = value
+        .clamp(protocol::MIN_BRIGHTNESS, protocol::MAX_BRIGHTNESS)
+        .to_le_bytes();
     [0, lo, hi]
 }

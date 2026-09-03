@@ -7,8 +7,8 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1.0.104"
+argh = { version = "0.1.13", default-features = false, features = ["help"] }
 board-hid = { path = "../board-hid" }
-clap = { version = "4.6.6", features = ["derive"] }
 hidapi = "2.6.6"
 protocol = { path = "../protocol" }
 

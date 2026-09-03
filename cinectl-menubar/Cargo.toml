@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1.0.104"
+block2 = "0.6.2"
 board-hid = { path = "../board-hid" }
 hidapi = { version = "2.6.7", features = ["macos-shared-device"] }
 objc2 = "0.6.4"
@@ -14,5 +15,4 @@ objc2-app-kit = "0.3.2"
 objc2-foundation = "0.3.2"
 objc2-service-management = "0.3.2"
 protocol = { version = "0.1.0", path = "../protocol" }
-tao = "0.37.0"
 tray-icon = "0.24.2"
