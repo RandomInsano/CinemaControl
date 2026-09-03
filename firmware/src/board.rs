@@ -160,7 +160,8 @@ fn backlight_pwm(
 
 fn fan_pwm(slice: Peri<'static, FanPwmSlice>, pin: Peri<'static, FanPwmPin>) -> FanPwmOutput {
     let divider: u8 = 1;
-    let top = (mcu_hal::clocks::clk_sys_freq() / (FAN_PWM_FREQUENCY_HZ * divider as u32)) as u16 - 1;
+    let top =
+        (mcu_hal::clocks::clk_sys_freq() / (FAN_PWM_FREQUENCY_HZ * divider as u32)) as u16 - 1;
 
     let mut config = pwm::Config::default();
     config.divider = divider.into();

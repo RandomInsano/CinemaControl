@@ -259,6 +259,9 @@ mod tests {
 
         c.clear_fault();
         assert_eq!(c.state(), FanState::Running(0));
-        assert!(matches!(c.stall_check(100, 2000, TICK), FanState::Running(_)));
+        assert!(matches!(
+            c.stall_check(100, 2000, TICK),
+            FanState::Running(_)
+        ));
     }
 }

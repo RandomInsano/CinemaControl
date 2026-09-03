@@ -138,11 +138,8 @@ fn schedule_tick(
         tick(&state, &login_item_item);
     });
     unsafe {
-        let timer = NSTimer::timerWithTimeInterval_repeats_block(
-            POLL_INTERVAL.as_secs_f64(),
-            true,
-            &block,
-        );
+        let timer =
+            NSTimer::timerWithTimeInterval_repeats_block(POLL_INTERVAL.as_secs_f64(), true, &block);
         NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
         timer
     }

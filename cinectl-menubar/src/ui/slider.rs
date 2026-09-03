@@ -142,7 +142,8 @@ impl BrightnessSlider {
         container.addSubview(&control);
 
         let write_failed = Rc::new(Cell::new(false));
-        let target = SliderTarget::new(mtm, write_device, brightness_item, Rc::clone(&write_failed));
+        let target =
+            SliderTarget::new(mtm, write_device, brightness_item, Rc::clone(&write_failed));
         unsafe {
             control.setTarget(Some(&target));
             control.setAction(Some(sel!(sliderChanged:)));
