@@ -2,7 +2,8 @@
 //! synchronously, right before the menu is shown.
 //!
 //! Refresh: doing this from a `TrayIconEvent::Click` handler (processed on
-//! the next tao tick after the click) was too late — `performClick` shows
+//! the next timer tick after the click — see `main.rs`'s `tick`) was too
+//! late — `performClick` shows
 //! the menu synchronously on `mouseDown`, so by the time our refresh ran
 //! the menu was already open, and inserting/removing a top-level item into
 //! an *already-visible* menu makes AppKit dismiss it. `menuNeedsUpdate:`

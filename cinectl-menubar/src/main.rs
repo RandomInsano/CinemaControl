@@ -26,26 +26,26 @@ mod ui;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_void;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use block2::RcBlock;
 use board_hid::device::{self, Board};
-use board_hid::report;
 use board_hid::telemetry::{
     read_brightness, read_power, read_power_thermal, read_processor_thermal, stream_brightness,
     stream_power, stream_power_thermal, stream_processor_thermal,
 };
 use board_hid::transport::{open, require_path};
-use hidapi::{HidApi, HidDevice};
+use hidapi::HidApi;
 use objc2::MainThreadMarker;
-use objc2_app_kit::NSMenu;
+use objc2::rc::Retained;
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSMenu};
+use objc2_foundation::{NSRunLoop, NSRunLoopCommonModes, NSTimer};
 use protocol::{MAX_BRIGHTNESS, PowerTelemetry, PowerThermalTelemetry, ProcessorThermalTelemetry};
-use tao::event::Event;
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tray_icon::menu::{CheckMenuItem, ContextMenu, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
 
@@ -112,75 +112,110 @@ fn main() -> Result<()> {
     let _menu_delegate = MenuDelegate::new(mtm, Rc::clone(&state));
     top_menu(top_ns_menu).setDelegate(Some(MenuDelegate::as_protocol_object(&_menu_delegate)));
 
-    let mut builder = EventLoopBuilder::new();
-    let mut event_loop = builder.build();
-    event_loop.set_activation_policy(ActivationPolicy::Accessory);
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
-    event_loop.run(move |event, _target, control_flow| {
-        *control_flow = ControlFlow::WaitUntil(Instant::now() + POLL_INTERVAL);
-        if !matches!(event, Event::NewEvents(_)) {
-            return;
-        }
+    let _timer = schedule_tick(state, login_item_item);
 
-        // The discovery refresh happens in MenuDelegate::menuNeedsUpdate,
-        // synchronously before the menu is shown — just drain the channel
-        // here so it doesn't grow unbounded.
-        while TrayIconEvent::receiver().try_recv().is_ok() {}
+    app.run();
+    Ok(())
+}
 
-        // `try_borrow_mut`, not `borrow_mut`: this can run re-entrantly
-        // while `MenuDelegate::menuNeedsUpdate` (which holds its own
-        // borrow for the ~200ms it may spend on I/O) is still on the
-        // stack. Skipping a tick here is harmless — drag polling just
-        // picks back up 250ms later — panicking is not.
-        if let Ok(mut state) = state.try_borrow_mut() {
-            let mut disconnected = Vec::new();
-            for (serial, board) in state.boards.iter_mut() {
-                // Applies whatever telemetry pushes have arrived since the
-                // last tick — cheap even when nothing has, since it's a
-                // non-blocking drain of however many background reader
-                // threads (see `TelemetryStreams`) have sent so far.
-                board.streams.drain_into(&board.menu);
-                if !board.poll_drag() {
-                    disconnected.push(serial.clone());
-                }
-            }
-            // Drop tracking (so we stop polling/writing to it) but don't
-            // touch its still-visible NSMenuItem here — this tick runs on
-            // a timer regardless of whether the menu is currently open,
-            // and removing a top-level item from an open menu is the same
-            // bug menuNeedsUpdate exists to avoid, just via a different
-            // trigger. Its stale submenu just sits there until the next
-            // open's discovery (safely, pre-display) confirms it's really
-            // gone and cleans it up then.
-            for serial in disconnected {
-                state.boards.remove(&serial);
-                eprintln!("CinemaControl device {serial:?} disconnected");
-            }
-        }
-
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
-            match event.id().0.as_str() {
-                "quit" => *control_flow = ControlFlow::Exit,
-                "start-at-login" => {
-                    let enable = !login_item_item.is_checked();
-                    match login_item::set_enabled(enable) {
-                        Ok(()) => login_item_item.set_checked(enable),
-                        Err(e) => eprintln!("failed to update login item: {e:#}"),
-                    }
-                }
-                _ => {}
-            }
-        }
+/// Drives [`tick`] every [`POLL_INTERVAL`] for as long as the returned
+/// `NSTimer` (held by the caller) stays alive.
+///
+/// Added to the main run loop's *common* modes by hand, rather than via
+/// `NSTimer`'s usual auto-scheduling (which only covers
+/// `NSDefaultRunLoopMode`): AppKit runs menu tracking in its own
+/// `NSEventTrackingRunLoopMode`, so without common modes this tick — and
+/// with it drag polling — would silently stop firing the moment a submenu
+/// is actually open, exactly when it matters most.
+fn schedule_tick(
+    state: Rc<RefCell<AppState>>,
+    login_item_item: CheckMenuItem,
+) -> Retained<NSTimer> {
+    let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
+        tick(&state, &login_item_item);
     });
+    unsafe {
+        let timer = NSTimer::timerWithTimeInterval_repeats_block(
+            POLL_INTERVAL.as_secs_f64(),
+            true,
+            &block,
+        );
+        NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+        timer
+    }
+}
+
+fn tick(state: &Rc<RefCell<AppState>>, login_item_item: &CheckMenuItem) {
+    // The discovery refresh happens in MenuDelegate::menuNeedsUpdate,
+    // synchronously before the menu is shown — just drain the channel
+    // here so it doesn't grow unbounded.
+    while TrayIconEvent::receiver().try_recv().is_ok() {}
+
+    // `try_borrow_mut`, not `borrow_mut`: this can run re-entrantly while
+    // `MenuDelegate::menuNeedsUpdate` (which holds its own borrow for the
+    // ~200ms it may spend on I/O) is still on the stack. Skipping a tick
+    // here is harmless — telemetry draining and the write-failed check
+    // just pick back up 250ms later — panicking is not.
+    if let Ok(mut state) = state.try_borrow_mut() {
+        let mut disconnected = Vec::new();
+        for (serial, board) in state.boards.iter_mut() {
+            // Applies whatever telemetry pushes have arrived since the
+            // last tick — cheap even when nothing has, since it's a
+            // non-blocking drain of however many background reader
+            // threads (see `TelemetryStreams`) have sent so far.
+            board.streams.drain_into(&board.menu);
+            // The slider itself writes brightness straight from its own
+            // target/action callback (see `ui::slider`), not on this
+            // timer — this only checks whether that last write failed, the
+            // same signal `poll_drag` used to use to catch an unplugged
+            // board immediately rather than waiting for the next
+            // menu-open discovery.
+            if board.menu.slider.write_failed() {
+                disconnected.push(serial.clone());
+            }
+        }
+        // Drop tracking (so we stop draining/checking it) but don't touch
+        // its still-visible NSMenuItem here — this tick runs on a timer
+        // regardless of whether the menu is currently open, and removing
+        // a top-level item from an open menu is the same bug
+        // menuNeedsUpdate exists to avoid, just via a different trigger.
+        // Its stale submenu just sits there until the next open's
+        // discovery (safely, pre-display) confirms it's really gone and
+        // cleans it up then.
+        for serial in disconnected {
+            state.boards.remove(&serial);
+            eprintln!("CinemaControl device {serial:?} disconnected");
+        }
+    }
+
+    while let Ok(event) = MenuEvent::receiver().try_recv() {
+        match event.id().0.as_str() {
+            "quit" => {
+                let mtm = MainThreadMarker::new().expect("must run on the main thread");
+                NSApplication::sharedApplication(mtm).terminate(None);
+            }
+            "start-at-login" => {
+                let enable = !login_item_item.is_checked();
+                match login_item::set_enabled(enable) {
+                    Ok(()) => login_item_item.set_checked(enable),
+                    Err(e) => eprintln!("failed to update login item: {e:#}"),
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn top_menu(ns_menu: *mut c_void) -> &'static NSMenu {
     unsafe { &*ns_menu.cast::<NSMenu>() }
 }
 
-/// All state a menu refresh touches, shared between the tao event loop
-/// (drag polling, menu/tray events) and `MenuDelegate` (populating the
-/// menu right before it's shown).
+/// All state a menu refresh touches, shared between `tick` (drag polling,
+/// menu/tray events) and `MenuDelegate` (populating the menu right before
+/// it's shown).
 pub(crate) struct AppState {
     api: HidApi,
     boards: BTreeMap<String, BoardState>,
@@ -315,21 +350,13 @@ fn apply(
         &format!("Temp: {}", telemetry.power_thermal),
         &format!("MCU: {}", telemetry.processor_thermal),
         percent(telemetry.brightness),
+        write_device,
     );
     let position = boards.len() as isize;
     top_menu(top_ns_menu).insertItem_atIndex(&menu.item, position);
 
     let streams = TelemetryStreams::open(api, &board);
-    boards.insert(
-        board.serial,
-        BoardState {
-            menu,
-            write_device,
-            streams,
-            brightness: telemetry.brightness,
-            slider_synced_percent: percent(telemetry.brightness),
-        },
-    );
+    boards.insert(board.serial, BoardState { menu, streams });
 }
 
 /// A board's four telemetry interfaces, each streamed by its own
@@ -399,34 +426,7 @@ fn drain<T>(stream: &mut Option<Receiver<Result<T>>>, mut apply: impl FnMut(T)) 
 
 struct BoardState {
     menu: BoardMenu,
-    write_device: HidDevice,
     streams: TelemetryStreams,
-    brightness: u16,
-    slider_synced_percent: u32,
-}
-
-impl BoardState {
-    /// Reconciles the slider against any drag since the last tick, writing
-    /// and echoing a new brightness if it's moved. Returns `false` once the
-    /// board is gone (the caller is then responsible for tearing this entry
-    /// down).
-    fn poll_drag(&mut self) -> bool {
-        let dragged_percent = self.menu.slider.percent();
-        if dragged_percent == self.slider_synced_percent {
-            return true;
-        }
-        // Round rather than floor: paired with the rounding in `percent()`,
-        // this keeps percent -> brightness -> percent a stable round trip.
-        self.brightness = ((dragged_percent * u32::from(MAX_BRIGHTNESS) + 50) / 100)
-            .min(u32::from(MAX_BRIGHTNESS)) as u16;
-        self.slider_synced_percent = dragged_percent;
-        if write_brightness(&self.write_device, self.brightness).is_err() {
-            return false;
-        }
-        self.menu
-            .set_brightness_text(&brightness_text(self.brightness));
-        true
-    }
 }
 
 struct Telemetry {
@@ -458,9 +458,10 @@ fn percent(value: u16) -> u32 {
     (u32::from(value) * 100 + u32::from(MAX_BRIGHTNESS) / 2) / u32::from(MAX_BRIGHTNESS)
 }
 
-fn write_brightness(device: &HidDevice, value: u16) -> Result<()> {
-    let report = report::brightness_feature_report(value);
-    device
-        .send_feature_report(&report)
-        .context("writing brightness feature report")
+/// Inverse of [`percent`] — round rather than floor, so percent ->
+/// brightness -> percent is a stable round trip. Used by the slider's own
+/// target/action callback (see `ui::slider`) to turn a dragged percentage
+/// back into a brightness value to write.
+fn brightness_from_percent(percent: u32) -> u16 {
+    ((percent * u32::from(MAX_BRIGHTNESS) + 50) / 100).min(u32::from(MAX_BRIGHTNESS)) as u16
 }

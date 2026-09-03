@@ -11,6 +11,7 @@
 
 use std::ffi::c_void;
 
+use hidapi::HidDevice;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSMenu, NSMenuItem};
@@ -35,6 +36,7 @@ impl BoardMenu {
         power_thermal_text: &str,
         processor_thermal_text: &str,
         initial_percent: u32,
+        write_device: HidDevice,
     ) -> Self {
         let mtm = MainThreadMarker::new().expect("must run on the main thread");
 
@@ -59,6 +61,8 @@ impl BoardMenu {
             Retained::as_ptr(&submenu) as *mut c_void,
             1,
             initial_percent,
+            write_device,
+            brightness_item.clone(),
         );
 
         Self {
