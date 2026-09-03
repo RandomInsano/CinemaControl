@@ -349,7 +349,7 @@ fn apply(
         &format!("Power: {}", telemetry.power),
         &format!("Temp: {}", telemetry.power_thermal),
         &format!("MCU: {}", telemetry.processor_thermal),
-        percent(telemetry.brightness),
+        telemetry.brightness,
         write_device,
     );
     let position = boards.len() as isize;
@@ -456,12 +456,4 @@ fn brightness_text(value: u16) -> String {
 
 fn percent(value: u16) -> u32 {
     (u32::from(value) * 100 + u32::from(MAX_BRIGHTNESS) / 2) / u32::from(MAX_BRIGHTNESS)
-}
-
-/// Inverse of [`percent`] — round rather than floor, so percent ->
-/// brightness -> percent is a stable round trip. Used by the slider's own
-/// target/action callback (see `ui::slider`) to turn a dragged percentage
-/// back into a brightness value to write.
-fn brightness_from_percent(percent: u32) -> u16 {
-    ((percent * u32::from(MAX_BRIGHTNESS) + 50) / 100).min(u32::from(MAX_BRIGHTNESS)) as u16
 }

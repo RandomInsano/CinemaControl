@@ -6,7 +6,8 @@ also buildable on Linux, that talks to it over USB HID — set/query/watch
 brightness and PSU telemetry).
 `protocol/` is a small `no_std` crate holding everything both of them need to
 agree on: the USB IDs and report lengths (`VENDOR_ID`/`PRODUCT_ID`,
-`MAX_BRIGHTNESS`, `*_REPORT_LEN`), the `PowerTelemetry`/`ThermalTelemetry`
+`MIN_BRIGHTNESS`/`MAX_BRIGHTNESS`, `*_REPORT_LEN`), the
+`PowerTelemetry`/`ThermalTelemetry`
 structs themselves — including their wire encoding (`to_bytes`/`from_bytes`,
 built on the `Report` byte-buffer builder in `protocol/src/hid_tools.rs`) and
 `Display` impls (used by `cinectl`; unused but harmless in `firmware`, which

@@ -35,12 +35,12 @@ enum Command {
 #[argh(subcommand, name = "list")]
 struct ListArgs {}
 
-/// Read the current brightness (0..=1023).
+/// Read the current brightness (8..=1023).
 #[derive(FromArgs)]
 #[argh(subcommand, name = "get-brightness")]
 struct GetBrightnessArgs {}
 
-/// Set the brightness (0..=1023, clamped).
+/// Set the brightness (8..=1023, clamped).
 #[derive(FromArgs)]
 #[argh(subcommand, name = "set-brightness")]
 struct SetBrightnessArgs {

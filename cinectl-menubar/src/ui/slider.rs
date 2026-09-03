@@ -12,6 +12,16 @@
 //! owns the board's write handle and writes+echoes a new brightness
 //! straight from the callback, so there's nothing to check on a timer.
 //!
+//! Ranged `MIN_BRIGHTNESS..=MAX_BRIGHTNESS` directly, not `0..=100`: a
+//! percent-ranged slider only has 101 discrete notches to drag across, well
+//! under `MAX_BRIGHTNESS`'s 1024 addressable values, so a chunk of the
+//! actual range was never reachable by dragging. Ranging it in brightness
+//! units natively means `doubleValue` needs no conversion to use, the full
+//! resolution is reachable, and the floor itself can't be dragged below
+//! `MIN_BRIGHTNESS` in the first place (the firmware enforces the same
+//! floor on any write regardless, but there's no reason to let the UI
+//! promise a value it won't honor).
+//!
 //! It's write-only from the app's side: nothing ever calls
 //! `setDoubleValue` again after `insert` sets the initial position. A
 //! telemetry read that disagreed with wherever the user last left the
@@ -56,8 +66,7 @@ define_class!(
     impl SliderTarget {
         #[unsafe(method(sliderChanged:))]
         fn slider_changed(&self, sender: &NSSlider) {
-            let percent = sender.doubleValue().round() as u32;
-            let brightness = crate::brightness_from_percent(percent);
+            let brightness = sender.doubleValue().round() as u16;
             let ivars = self.ivars().borrow();
             let report = report::brightness_feature_report(brightness);
             if ivars.write_device.send_feature_report(&report).is_ok() {
@@ -107,7 +116,7 @@ impl BrightnessSlider {
     pub fn insert(
         ns_menu: *mut c_void,
         index: isize,
-        initial_percent: u32,
+        initial_brightness: u16,
         write_device: HidDevice,
         brightness_item: Retained<NSMenuItem>,
     ) -> Self {
@@ -126,9 +135,9 @@ impl BrightnessSlider {
 
         let slider_frame = NSRect::new(NSPoint::new(INSET, 0.0), NSSize::new(WIDTH, HEIGHT));
         let control = NSSlider::initWithFrame(mtm.alloc(), slider_frame);
-        control.setMinValue(0.0);
-        control.setMaxValue(100.0);
-        control.setDoubleValue(f64::from(initial_percent));
+        control.setMinValue(f64::from(protocol::MIN_BRIGHTNESS));
+        control.setMaxValue(f64::from(protocol::MAX_BRIGHTNESS));
+        control.setDoubleValue(f64::from(initial_brightness));
         control.setContinuous(true);
         container.addSubview(&control);
 

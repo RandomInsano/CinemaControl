@@ -21,10 +21,16 @@ use crate::smbus::{POWER_TELEMETRY, POWER_THERMAL_TELEMETRY};
 
 pub static BRIGHTNESS: Watch<CriticalSectionRawMutex, u16, 4> = Watch::new_with(512);
 
+/// Clamps to `MIN_BRIGHTNESS..=MAX_BRIGHTNESS` — every entry point a raw
+/// brightness value can come in through (a HID write, flash-restored state)
+/// goes through this, so the backlight can never be driven fully dark
+/// regardless of what a host (ours or otherwise) asks for.
+fn clamp_brightness(value: u16) -> u16 {
+    value.clamp(protocol::MIN_BRIGHTNESS, protocol::MAX_BRIGHTNESS)
+}
+
 pub fn restore_brightness(value: u16) {
-    BRIGHTNESS
-        .sender()
-        .send(value.min(protocol::MAX_BRIGHTNESS));
+    BRIGHTNESS.sender().send(clamp_brightness(value));
 }
 
 /// VESA VCP code 0x10 "Luminance", Usage Page 0x82.
@@ -35,7 +41,7 @@ const MONITOR_REPORT_DESCRIPTOR: &[u8] = &[
     0xA1, 0x01,       // Collection (Application)
     0x05, 0x82,       //   Usage Page (VESA Virtual Controls)
     0x09, 0x10,       //   Usage (Brightness / VCP 0x10)
-    0x15, 0x00,       //   Logical Minimum (0)
+    0x15, 0x08,       //   Logical Minimum (8, MIN_BRIGHTNESS)
     0x26, 0xFF, 0x03, //   Logical Maximum (1023)
     0x75, 0x10,       //   Report Size (16)
     0x95, 0x01,       //   Report Count (1)
@@ -136,7 +142,7 @@ impl RequestHandler for BrightnessHandler {
     fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
         match id {
             ReportId::Feature(_) if data.len() >= 2 => {
-                let v = u16::from_le_bytes([data[0], data[1]]).min(protocol::MAX_BRIGHTNESS);
+                let v = clamp_brightness(u16::from_le_bytes([data[0], data[1]]));
                 BRIGHTNESS.sender().send(v);
                 defmt::info!("brightness set to {}", v);
                 OutResponse::Accepted
