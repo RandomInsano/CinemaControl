@@ -7,7 +7,7 @@ edition = "2024"
 default = []
 # Drive a WS2812 ("NeoPixel") on GPIO16 via PIO0 (see `neopixel.rs`): the
 # RP2040-Zero's onboard LED, or an external one wired to GPIO16 on a Pico.
-neopixel = []
+neopixel = ["dep:smart-leds"]
 
 [dependencies]
 cortex-m = "0.7.9"
@@ -29,5 +29,5 @@ panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 portable-atomic = { version = "1.15", features = ["critical-section"] }
 protocol = { path = "../protocol" }
 sequential-storage = { version = "8.0.1", features = ["defmt"] }
-smart-leds = "0.4"
+smart-leds = { version = "0.4", optional = true }
 static_cell = "2.1.1"

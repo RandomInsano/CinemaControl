@@ -7,7 +7,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::watch::Watch;
 use embassy_time::{Delay, Duration, Timer, with_timeout};
-use emc1403::{Channel, ConversionRate, Emc1403};
+use emc1403::{Channel, Configuration, ConversionRate, Emc1403};
 use ina219::Ina219;
 use mcu_hal::i2c;
 
@@ -56,9 +56,19 @@ pub async fn ina219_task(bus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>)
     let refresh_interval = refresh_interval_for(2 * INA219_PRECISION.conversion_time_us());
 
     let mut last_sent = PowerTelemetry::default();
+    // Set once Configuration/Calibration have actually been written, so a
+    // steady stream of successful cycles doesn't rewrite them every time —
+    // cleared on a bus error or timeout, since either can mean the PSU
+    // power-cycled and reset the chip's registers to power-on defaults.
+    let mut configured = false;
 
     loop {
-        match with_timeout(I2C_CYCLE_TIMEOUT, try_read_power_rail(&mut sensor)).await {
+        match with_timeout(
+            I2C_CYCLE_TIMEOUT,
+            read_power_rail(&mut sensor, &mut configured),
+        )
+        .await
+        {
             Ok(Ok((voltage_mv, current_ma, power_mw))) => {
                 let telemetry = PowerTelemetry {
                     voltage_mv,
@@ -70,8 +80,16 @@ pub async fn ina219_task(bus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>)
                     last_sent = telemetry;
                 }
             }
-            Ok(Err(e)) => warn!("INA219 power rail read failed: {}", defmt::Debug2Format(&e)),
-            Err(_) => warn!("INA219 power rail read timed out — PSU likely powered down"),
+            Ok(Err(e)) => {
+                if matches!(e, PowerRailError::Bus(_)) {
+                    configured = false;
+                }
+                warn!("INA219 power rail read failed: {}", defmt::Debug2Format(&e));
+            }
+            Err(_) => {
+                configured = false;
+                warn!("INA219 power rail read timed out — PSU likely powered down");
+            }
         }
         Timer::after(refresh_interval).await;
     }
@@ -95,16 +113,20 @@ impl From<ina219::Error<i2c::Error>> for PowerRailError {
     }
 }
 
-async fn try_read_power_rail(
+async fn read_power_rail(
     sensor: &mut Ina219<SharedI2c>,
+    configured: &mut bool,
 ) -> Result<(u16, i16, u32), PowerRailError> {
-    let config = ina219::Configuration {
-        bus_adc: INA219_PRECISION,
-        shunt_adc: INA219_PRECISION,
-        ..ina219::Configuration::default()
-    };
-    sensor.set_configuration(config).await?;
-    sensor.calibrate().await?;
+    if !*configured {
+        let config = ina219::Configuration {
+            bus_adc: INA219_PRECISION,
+            shunt_adc: INA219_PRECISION,
+            ..ina219::Configuration::default()
+        };
+        sensor.set_configuration(config).await?;
+        sensor.calibrate().await?;
+        *configured = true;
+    }
 
     let voltage = sensor.bus_voltage().await?;
     if voltage.overflow {
@@ -121,12 +143,27 @@ async fn try_read_power_rail(
 pub async fn emc1403_task(bus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>) -> ! {
     Timer::after(Duration::from_secs(2)).await;
 
+    let mut sensor = Emc1403::new(SharedI2c::new(bus), EMC1403_ADDR);
     let refresh_interval = refresh_interval_for(EMC1403_RATE.period_us());
 
     let mut last_sent = PowerThermalTelemetry::default();
+    // `Some(range_extended)` once probing/set_conversion_rate have actually
+    // run and RANGE (fixed at init, and never changed by this task) has been
+    // read back — same idiom as `ina219_task`'s `configured`, but also
+    // doubling as the cached RANGE bit `read_temp_c_with_range` needs, so a
+    // steady stream of successful cycles doesn't pay for either a redundant
+    // probe/reconfigure or a redundant Configuration read every time. `None`
+    // on a bus error or timeout, since either can mean the PSU power-cycled
+    // and reset the chip's registers to power-on defaults.
+    let mut range_extended: Option<bool> = None;
 
     loop {
-        match with_timeout(I2C_CYCLE_TIMEOUT, try_read_power_thermal(bus)).await {
+        match with_timeout(
+            I2C_CYCLE_TIMEOUT,
+            read_power_thermal(&mut sensor, &mut range_extended),
+        )
+        .await
+        {
             Ok(Ok((internal_decic, external1_decic))) => {
                 let telemetry = PowerThermalTelemetry {
                     internal_decic,
@@ -137,8 +174,14 @@ pub async fn emc1403_task(bus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>
                     last_sent = telemetry;
                 }
             }
-            Ok(Err(e)) => warn!("EMC1403 thermal read failed: {}", defmt::Debug2Format(&e)),
-            Err(_) => warn!("EMC1403 thermal read timed out — PSU likely powered down"),
+            Ok(Err(e)) => {
+                range_extended = None;
+                warn!("EMC1403 thermal read failed: {}", defmt::Debug2Format(&e));
+            }
+            Err(_) => {
+                range_extended = None;
+                warn!("EMC1403 thermal read timed out — PSU likely powered down");
+            }
         }
         Timer::after(refresh_interval).await;
     }
@@ -148,15 +191,27 @@ fn refresh_interval_for(conversion_us: u32) -> Duration {
     Duration::from_micros(conversion_us as u64) + Duration::from_millis(REFRESH_MARGIN_MS)
 }
 
-async fn try_read_power_thermal(
-    bus: &'static Mutex<CriticalSectionRawMutex, SmbusBus>,
+async fn read_power_thermal(
+    sensor: &mut Emc1403<SharedI2c>,
+    range_extended: &mut Option<bool>,
 ) -> Result<(i16, i16), emc1403::Error<i2c::Error>> {
-    let mut sensor = Emc1403::new(SharedI2c::new(bus), EMC1403_ADDR);
-    sensor.probe(&mut Delay).await?;
-    sensor.set_conversion_rate(EMC1403_RATE).await?;
+    let extended = match *range_extended {
+        Some(extended) => extended,
+        None => {
+            sensor.probe(&mut Delay).await?;
+            sensor.set_conversion_rate(EMC1403_RATE).await?;
+            let extended = sensor.configuration().await?.contains(Configuration::RANGE);
+            *range_extended = Some(extended);
+            extended
+        }
+    };
 
-    let internal_c = sensor.read_temp_c(Channel::Internal).await?;
-    let external1_c = sensor.read_temp_c(Channel::External1).await?;
+    let internal_c = sensor
+        .read_temp_c_with_range(Channel::Internal, extended)
+        .await?;
+    let external1_c = sensor
+        .read_temp_c_with_range(Channel::External1, extended)
+        .await?;
 
     Ok(((internal_c * 10.0) as i16, (external1_c * 10.0) as i16))
 }

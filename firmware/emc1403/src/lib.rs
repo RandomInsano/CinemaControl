@@ -345,14 +345,31 @@ impl<I2C: I2c> Emc1403<I2C> {
     /// returns a stale value from some earlier, unrelated read.
     ///
     /// Re-reads Configuration on every call to check the RANGE bit; if
-    /// you're polling at high rate and RANGE is fixed at init, cache it
-    /// instead of paying for that extra transaction each time.
+    /// you're polling at high rate and RANGE is fixed at init, use
+    /// [`Self::read_temp_c_with_range`] instead, caching RANGE yourself
+    /// (e.g. via [`Self::configuration`]) rather than paying for that extra
+    /// transaction every call.
     pub async fn read_temp_c(&mut self, ch: Channel) -> Result<f32, Error<I2C::Error>> {
         let (hi_reg, lo_reg) = ch.temp_regs();
         let hi = self.read_register(hi_reg).await?; // read first, always
         let lo = self.read_register(lo_reg).await?; // now-latched shadow value
         let extended = self.range_is_extended().await?;
         Ok(decode_temp_c(hi, lo, extended))
+    }
+
+    /// Like [`Self::read_temp_c`], but takes an already-known RANGE bit
+    /// (see [`Self::configuration`]) instead of re-reading Configuration on
+    /// every call — for a caller polling one or more channels on a steady
+    /// cadence who already knows RANGE is fixed at init.
+    pub async fn read_temp_c_with_range(
+        &mut self,
+        ch: Channel,
+        range_extended: bool,
+    ) -> Result<f32, Error<I2C::Error>> {
+        let (hi_reg, lo_reg) = ch.temp_regs();
+        let hi = self.read_register(hi_reg).await?; // read first, always
+        let lo = self.read_register(lo_reg).await?; // now-latched shadow value
+        Ok(decode_temp_c(hi, lo, range_extended))
     }
 
     pub async fn status(&mut self) -> Result<Status, Error<I2C::Error>> {
